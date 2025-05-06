@@ -1,8 +1,14 @@
 // backend/api/controllers/botController.js
 const Bot = require('../../services/Bot');
 const BotConfig = require('../models/BotConfig');
+// backend/api/controllers/botController.js
+// Добавляем импорты в начало файла
+const BitgetAPI = require('../../services/BitgetAPI');
+const MarketAnalyzer = require('../../services/MarketAnalyzer');
 
 let activeBots = {};
+
+// backend/api/controllers/botController.js - установим значения по умолчанию
 
 exports.startBot = async (req, res) => {
   try {
@@ -16,6 +22,41 @@ exports.startBot = async (req, res) => {
       return res.status(400).json({ error: 'Bot already running for this symbol' });
     }
 
+    // Значения по умолчанию для конфигурации
+    const defaultConfig = {
+      activeStrategy: 'AUTO',
+      common: {
+        enabled: true,
+        leverage: 10,
+        initialBalance: 100,
+        reinvestment: 100
+      },
+      dca: {
+        maxDCAOrders: 5,
+        dcaPriceStep: 1.5,
+        dcaMultiplier: 1.5,
+        maxTradeDuration: 240,
+        trailingStop: 0.5
+      },
+      scalping: {
+        timeframe: '1m',
+        profitTarget: 0.5,
+        stopLoss: 0.3,
+        maxTradeDuration: 30,
+        minVolatility: 0.2,
+        maxSpread: 0.1,
+        useTrailingStop: true,
+        trailingStopActivation: 0.2,
+        trailingStopDistance: 0.1
+      },
+      autoSwitching: {
+        enabled: true,
+        volatilityThreshold: 1.5,
+        volumeThreshold: 2.0,
+        trendStrengthThreshold: 0.6
+      }
+    };
+
     // Получаем конфигурацию из базы данных или используем предоставленную
     let botConfig = config;
     if (!config) {
@@ -23,11 +64,11 @@ exports.startBot = async (req, res) => {
       if (savedConfig) {
         botConfig = savedConfig.config;
       } else {
-        return res.status(400).json({ error: 'No configuration found for this symbol' });
+        botConfig = defaultConfig;
       }
     }
 
-    // Создаем новый экземпляр бота
+    // Создаем новый экземпляр бота с полной конфигурацией
     const bot = new Bot(symbol, botConfig);
     await bot.initialize();
     
@@ -37,7 +78,11 @@ exports.startBot = async (req, res) => {
     // Сохраняем бота в активных ботах
     activeBots[symbol] = bot;
     
-    res.json({ success: true, message: `Bot started for ${symbol}` });
+    res.json({ 
+      success: true, 
+      message: `Bot started for ${symbol}`, 
+      activeStrategy: bot.currentStrategy.name 
+    });
   } catch (error) {
     console.error('Error starting bot:', error);
     res.status(500).json({ error: error.message });
@@ -87,7 +132,35 @@ exports.getBotStatus = async (req, res) => {
     }
 
     if (!activeBots[symbol]) {
-      return res.json({ running: false });
+      return res.json({ 
+        running: false,
+        stats: {
+          totalTrades: 0,
+          winTrades: 0,
+          lossTrades: 0,
+          totalPnl: 0,
+          maxDrawdown: 0,
+          currentBalance: 100,
+          initialBalance: 100,
+          tradesToday: 0,
+          hourlyTrades: Array(24).fill(0),
+          hourlyPnl: Array(24).fill(0),
+          strategyPerformance: {
+            DCA: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 },
+            SCALPING: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 }
+          },
+          lastMarketAnalysis: {
+            timestamp: Date.now(),
+            recommendedStrategy: 'DCA',
+            marketType: 'UNKNOWN',
+            volatility: 0,
+            volumeRatio: 0,
+            trendStrength: 0,
+            confidence: 0.5
+          },
+          activeStrategy: 'DCA'
+        }
+      });
     }
 
     res.json({
@@ -112,16 +185,18 @@ exports.updateConfig = async (req, res) => {
     // Обновляем конфигурацию в базе данных
     let botConfig = await BotConfig.findOne({ symbol });
     if (botConfig) {
-      botConfig.config = config;
+      // Обновляем существующую конфигурацию
+      Object.assign(botConfig, config);
       await botConfig.save();
     } else {
-      botConfig = new BotConfig({ symbol, config });
+      // Создаем новую конфигурацию
+      botConfig = new BotConfig({ symbol, ...config });
       await botConfig.save();
     }
 
     // Если бот активен, обновляем его конфигурацию
     if (activeBots[symbol]) {
-      activeBots[symbol].updateConfig(config);
+      activeBots[symbol].updateConfig(botConfig);
     }
     
     res.json({ success: true, message: `Configuration updated for ${symbol}` });
@@ -139,12 +214,14 @@ exports.getConfig = async (req, res) => {
       return res.status(400).json({ error: 'Symbol is required' });
     }
 
-    const botConfig = await BotConfig.findOne({ symbol });
+    let botConfig = await BotConfig.findOne({ symbol });
     if (!botConfig) {
-      return res.status(404).json({ error: 'No configuration found for this symbol' });
+      // Создаем дефолтную конфигурацию
+      botConfig = new BotConfig({ symbol });
+      await botConfig.save();
     }
     
-    res.json(botConfig.config);
+    res.json(botConfig);
   } catch (error) {
     console.error('Error getting config:', error);
     res.status(500).json({ error: error.message });
@@ -160,13 +237,110 @@ exports.getStats = async (req, res) => {
     }
 
     if (!activeBots[symbol]) {
-      return res.status(404).json({ error: 'No active bot found for this symbol' });
+      return res.json({
+        totalTrades: 0,
+        winTrades: 0,
+        lossTrades: 0,
+        totalPnl: 0,
+        maxDrawdown: 0,
+        currentBalance: 100,
+        initialBalance: 100,
+        tradesToday: 0,
+        hourlyTrades: Array(24).fill(0),
+        hourlyPnl: Array(24).fill(0),
+        strategyPerformance: {
+          DCA: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 },
+          SCALPING: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 }
+        },
+        lastMarketAnalysis: {
+          timestamp: Date.now(),
+          recommendedStrategy: 'DCA',
+          marketType: 'UNKNOWN',
+          volatility: 0,
+          volumeRatio: 0,
+          trendStrength: 0,
+          confidence: 0.5
+        },
+        activeStrategy: 'DCA'
+      });
     }
     
     const stats = activeBots[symbol].getStats();
     res.json(stats);
   } catch (error) {
     console.error('Error getting stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.setStrategy = async (req, res) => {
+  try {
+    const { symbol, strategy } = req.body;
+    
+    if (!symbol || !strategy) {
+      return res.status(400).json({ error: 'Symbol and strategy are required' });
+    }
+
+    if (!activeBots[symbol]) {
+      return res.status(404).json({ error: 'No active bot found for this symbol' });
+    }
+    
+    // Обновляем конфигурацию в базе данных
+    let botConfig = await BotConfig.findOne({ symbol });
+    if (botConfig) {
+      botConfig.activeStrategy = strategy;
+      await botConfig.save();
+    }
+    
+    // Устанавливаем стратегию
+    const currentStrategy = activeBots[symbol].setStrategy(strategy);
+    
+    res.json({ 
+      success: true, 
+      message: `Strategy changed to ${strategy} for ${symbol}`,
+      currentStrategy
+    });
+  } catch (error) {
+    console.error('Error setting strategy:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.analyzeMarket = async (req, res) => {
+  try {
+    const { symbol } = req.query;
+    
+    if (!symbol) {
+      return res.status(400).json({ error: 'Symbol is required' });
+    }
+
+    if (!activeBots[symbol]) {
+      // Если бот не запущен, создаем временный экземпляр для анализа
+      let botConfig = await BotConfig.findOne({ symbol });
+      if (!botConfig) {
+        botConfig = new BotConfig({ symbol });
+        await botConfig.save();
+      }
+      
+      const api = new BitgetAPI();
+      const marketAnalyzer = new MarketAnalyzer(symbol, botConfig, api);
+      const analysis = await marketAnalyzer.analyzeMarketConditions();
+      
+      return res.json({
+        ...analysis,
+        symbol
+      });
+    }
+    
+    // Запрашиваем анализ рынка
+    const analysis = await activeBots[symbol].marketAnalyzer.analyzeMarketConditions();
+    
+    res.json({
+      ...analysis,
+      symbol
+    });
+  } catch (error) {
+    console.error('Error analyzing market:', error);
     res.status(500).json({ error: error.message });
   }
 };

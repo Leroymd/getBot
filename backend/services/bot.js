@@ -1,6 +1,9 @@
 // backend/services/Bot.js
 const BitgetAPI = require('./BitgetAPI');
 const Trade = require('../api/models/Trade');
+const DCAStrategy = require('./strategies/DCAStrategy');
+const ScalpingStrategy = require('./strategies/ScalpingStrategy');
+const MarketAnalyzer = require('./MarketAnalyzer');
 const { v4: uuidv4 } = require('uuid');
 
 class Bot {
@@ -15,36 +18,116 @@ class Bot {
     this.botId = uuidv4();
     this.openPosition = null;
     this.dcaOrders = [];
+    
+    // Инициализация стратегий
+    this.dcaStrategy = new DCAStrategy(symbol, config, this.api);
+    this.scalpingStrategy = new ScalpingStrategy(symbol, config, this.api);
+    this.marketAnalyzer = new MarketAnalyzer(symbol, config, this.api);
+    
+    // Текущая активная стратегия
+    this.activeStrategy = config.activeStrategy || 'AUTO';
+    this.currentStrategy = this.dcaStrategy; // По умолчанию DCA
+    
     this.stats = {
       totalTrades: 0,
       winTrades: 0,
       lossTrades: 0,
       totalPnl: 0,
       maxDrawdown: 0,
-      currentBalance: config.initialBalance || 100,
-      initialBalance: config.initialBalance || 100,
+      currentBalance: config.common.initialBalance || 100,
+      initialBalance: config.common.initialBalance || 100,
       tradesToday: 0,
       hourlyTrades: Array(24).fill(0),
-      hourlyPnl: Array(24).fill(0)
+      hourlyPnl: Array(24).fill(0),
+      strategyPerformance: {
+        DCA: {
+          trades: 0,
+          winRate: 0,
+          avgProfit: 0,
+          avgLoss: 0
+        },
+        SCALPING: {
+          trades: 0,
+          winRate: 0,
+          avgProfit: 0,
+          avgLoss: 0
+        }
+      },
+      lastMarketAnalysis: {
+        timestamp: 0,
+        recommendedStrategy: 'DCA',
+        marketType: 'UNKNOWN',
+        volatility: 0,
+        volumeRatio: 0,
+        trendStrength: 0,
+        confidence: 0
+      }
     };
   }
 
   // Инициализация бота
   async initialize() {
+  try {
+    // Установка плеча (с обработкой возможных ошибок)
     try {
-      // Установка плеча
-      await this.api.setLeverage(this.symbol, this.config.leverage);
+      await this.api.setLeverage(this.symbol, this.config.common.leverage);
+      console.log(`Установлено плечо ${this.config.common.leverage}x для ${this.symbol}`);
+    } catch (leverageError) {
+      console.warn(`Не удалось установить плечо для ${this.symbol}: ${leverageError.message}. Продолжаем работу.`);
+    }
+    
+    // Загрузка истории сделок из базы данных
+    const trades = await Trade.find({ botId: this.botId, symbol: this.symbol }).sort({ entryTime: -1 });
+    
+    // Обновление статистики на основе истории
+    this.updateStatsFromHistory(trades);
+    
+    // Первичный анализ рынка
+    await this.updateActiveStrategy();
+    
+    console.log(`Bot initialized for ${this.symbol} with leverage ${this.config.common.leverage}x, active strategy: ${this.currentStrategy.name}`);
+  } catch (error) {
+    console.error('Error initializing bot:', error);
+    throw error;
+  }
+}
+
+  // Обновление активной стратегии на основе рыночных условий
+  async updateActiveStrategy() {
+    try {
+      // Если стратегия зафиксирована пользователем, просто применяем ее
+      if (this.activeStrategy === 'DCA') {
+        this.currentStrategy = this.dcaStrategy;
+        return this.dcaStrategy.name;
+      } else if (this.activeStrategy === 'SCALPING') {
+        this.currentStrategy = this.scalpingStrategy;
+        return this.scalpingStrategy.name;
+      }
       
-      // Загрузка истории сделок из базы данных
-      const trades = await Trade.find({ botId: this.botId, symbol: this.symbol }).sort({ entryTime: -1 });
+      // В режиме AUTO анализируем рынок и выбираем оптимальную стратегию
+      const marketAnalysis = await this.marketAnalyzer.analyzeMarketConditions();
       
-      // Обновление статистики на основе истории
-      this.updateStatsFromHistory(trades);
+      // Сохраняем анализ рынка в статистике
+      this.stats.lastMarketAnalysis = {
+        timestamp: Date.now(),
+        ...marketAnalysis
+      };
       
-      console.log(`Bot initialized for ${this.symbol} with leverage ${this.config.leverage}x`);
+      // Применяем рекомендуемую стратегию
+      if (marketAnalysis.recommendedStrategy === 'SCALPING') {
+        this.currentStrategy = this.scalpingStrategy;
+      } else {
+        this.currentStrategy = this.dcaStrategy;
+      }
+      
+      console.log(`Updated active strategy for ${this.symbol} to ${this.currentStrategy.name} based on market conditions: ${marketAnalysis.marketType} (volatility: ${marketAnalysis.volatility.toFixed(2)}%, trend strength: ${marketAnalysis.trendStrength.toFixed(2)})`);
+      
+      return this.currentStrategy.name;
     } catch (error) {
-      console.error('Error initializing bot:', error);
-      throw error;
+      console.error(`Error updating active strategy for ${this.symbol}:`, error);
+      // В случае ошибки используем DCA как более безопасную стратегию
+      this.currentStrategy = this.dcaStrategy;
+      return this.dcaStrategy.name;
     }
   }
 
@@ -58,9 +141,12 @@ class Bot {
     let wins = 0;
     let losses = 0;
     let totalPnl = 0;
-    let balance = this.config.initialBalance;
+    let balance = this.config.common.initialBalance;
     let maxBalance = balance;
     let maxDrawdown = 0;
+    
+    const dcaTrades = [];
+    const scalpingTrades = [];
     
     // Обнуляем почасовую статистику
     this.stats.hourlyTrades = Array(24).fill(0);
@@ -91,6 +177,13 @@ class Bot {
         this.stats.hourlyTrades[hour]++;
         this.stats.hourlyPnl[hour] += pnl;
       }
+      
+      // Разделяем сделки по типу стратегии
+      if (trade.strategy === 'SCALPING') {
+        scalpingTrades.push(trade);
+      } else {
+        dcaTrades.push(trade);
+      }
     });
     
     this.stats.winTrades = wins;
@@ -98,6 +191,10 @@ class Bot {
     this.stats.totalPnl = totalPnl;
     this.stats.maxDrawdown = maxDrawdown;
     this.stats.currentBalance = balance;
+    
+    // Обновляем статистику по стратегиям
+    this._updateStrategyStats('DCA', dcaTrades);
+    this._updateStrategyStats('SCALPING', scalpingTrades);
     
     // Проверка текущих открытых позиций
     const openTrade = trades.find(t => t.status === 'OPEN');
@@ -108,19 +205,47 @@ class Bot {
         quantity: openTrade.quantity,
         direction: openTrade.direction,
         entryTime: openTrade.entryTime,
-        dcaCount: openTrade.dcaCount,
+        dcaCount: openTrade.dcaCount || 0,
         highestPrice: openTrade.direction === 'LONG' ? openTrade.entryPrice : Infinity,
         lowestPrice: openTrade.direction === 'SHORT' ? openTrade.entryPrice : 0,
-        trailingStopPrice: this.calculateTrailingStopPrice(openTrade.entryPrice, openTrade.direction)
+        trailingStopPrice: this.dcaStrategy.calculateTrailingStopPrice(openTrade.entryPrice, openTrade.direction),
+        trailingStopActive: openTrade.strategy === 'SCALPING' ? false : true, // Для скальпинга активируется только при достижении порога
+        strategy: openTrade.strategy || 'DCA',
+        stopLossPrice: openTrade.stopLossPrice,
+        takeProfitPrice: openTrade.takeProfitPrice
       };
     }
   }
 
-  // Расчет цены трейлинг-стопа
-  calculateTrailingStopPrice(price, direction) {
-    return direction === 'LONG' 
-      ? price * (1 - this.config.trailingStop / 100) 
-      : price * (1 + this.config.trailingStop / 100);
+  // Обновление статистики по отдельной стратегии
+  _updateStrategyStats(strategyName, trades) {
+    if (trades.length === 0) {
+      this.stats.strategyPerformance[strategyName] = {
+        trades: 0,
+        winRate: 0,
+        avgProfit: 0,
+        avgLoss: 0
+      };
+      return;
+    }
+    
+    const wins = trades.filter(t => (t.profitLoss || 0) > 0);
+    const losses = trades.filter(t => (t.profitLoss || 0) < 0);
+    
+    const avgProfit = wins.length > 0 
+      ? wins.reduce((sum, t) => sum + (t.profitLoss || 0), 0) / wins.length 
+      : 0;
+    
+    const avgLoss = losses.length > 0 
+      ? losses.reduce((sum, t) => sum + (t.profitLoss || 0), 0) / losses.length 
+      : 0;
+    
+    this.stats.strategyPerformance[strategyName] = {
+      trades: trades.length,
+      winRate: trades.length > 0 ? (wins.length / trades.length) * 100 : 0,
+      avgProfit,
+      avgLoss: Math.abs(avgLoss) // Для удобства показываем как положительное число
+    };
   }
 
   // Запуск бота
@@ -136,7 +261,7 @@ class Bot {
     // Запускаем первый тик сразу
     this.tick();
     
-    console.log(`Bot started for ${this.symbol}`);
+    console.log(`Bot started for ${this.symbol} with strategy ${this.currentStrategy.name}`);
   }
 
   // Остановка бота
@@ -164,7 +289,12 @@ class Bot {
       
       // Получение текущей цены
       const ticker = await this.api.getTicker(this.symbol);
-      const currentPrice = parseFloat(ticker.data.last);
+      const currentPrice = parseFloat(ticker.data[0].last);
+      
+      // Периодическое обновление активной стратегии (раз в час)
+      if (now - this.stats.lastMarketAnalysis.timestamp > 60 * 60 * 1000) {
+        await this.updateActiveStrategy();
+      }
       
       // Обработка открытых позиций
       if (this.openPosition) {
@@ -183,16 +313,54 @@ class Bot {
     const position = this.openPosition;
     const elapsedMinutes = Math.floor((Date.now() - new Date(position.entryTime).getTime()) / 60000);
     
-    // Обновление максимальной/минимальной цены и трейлинг-стопа
+    // Подготовка данных для анализа
+    const marketData = {
+      position,
+      elapsedMinutes
+    };
+    
+    // Обновление максимальной/минимальной цены
     if (position.direction === 'LONG') {
       if (currentPrice > position.highestPrice) {
         position.highestPrice = currentPrice;
-        position.trailingStopPrice = this.calculateTrailingStopPrice(currentPrice, 'LONG');
+        
+        // Обновление трейлинг-стопа в зависимости от стратегии
+        if (position.strategy === 'DCA' || 
+           (position.strategy === 'SCALPING' && 
+            position.trailingStopActive)) {
+          position.trailingStopPrice = this.dcaStrategy.calculateTrailingStopPrice(currentPrice, 'LONG');
+        }
+        
+        // Активация трейлинг-стопа для скальпинга при достижении порога активации
+        if (position.strategy === 'SCALPING' && !position.trailingStopActive) {
+          const activationThreshold = position.entryPrice * (1 + this.config.scalping.trailingStopActivation / 100);
+          if (currentPrice >= activationThreshold) {
+            position.trailingStopActive = true;
+            position.trailingStopPrice = currentPrice * (1 - this.config.scalping.trailingStopDistance / 100);
+            console.log(`Activated trailing stop for ${this.symbol} at ${position.trailingStopPrice}`);
+          }
+        }
       }
     } else { // SHORT
       if (currentPrice < position.lowestPrice) {
         position.lowestPrice = currentPrice;
-        position.trailingStopPrice = this.calculateTrailingStopPrice(currentPrice, 'SHORT');
+        
+        // Обновление трейлинг-стопа в зависимости от стратегии
+        if (position.strategy === 'DCA' || 
+           (position.strategy === 'SCALPING' && 
+            position.trailingStopActive)) {
+          position.trailingStopPrice = this.dcaStrategy.calculateTrailingStopPrice(currentPrice, 'SHORT');
+        }
+        
+        // Активация трейлинг-стопа для скальпинга при достижении порога активации
+        if (position.strategy === 'SCALPING' && !position.trailingStopActive) {
+          const activationThreshold = position.entryPrice * (1 - this.config.scalping.trailingStopActivation / 100);
+          if (currentPrice <= activationThreshold) {
+            position.trailingStopActive = true;
+            position.trailingStopPrice = currentPrice * (1 + this.config.scalping.trailingStopDistance / 100);
+            console.log(`Activated trailing stop for ${this.symbol} at ${position.trailingStopPrice}`);
+          }
+        }
       }
     }
     
@@ -204,41 +372,42 @@ class Bot {
       pnl = position.quantity * (position.entryPrice - currentPrice);
     }
     
-    // Проверка условий для закрытия позиции
-    const isTrailingStopTriggered = position.direction === 'LONG' 
-      ? currentPrice < position.trailingStopPrice 
-      : currentPrice > position.trailingStopPrice;
-    
-    const isMaxDurationReached = elapsedMinutes >= this.config.maxTradeDuration;
-    
-    // PnL не растет в течение некоторого времени
-    let isPnlStagnant = false;
-    // Здесь можно реализовать логику определения стагнации PnL
-    
-    if (isTrailingStopTriggered) {
-      await this.closePosition('TRAILING_STOP', currentPrice, pnl);
-    } else if (isMaxDurationReached) {
-      await this.closePosition('MAX_DURATION', currentPrice, pnl);
-    } else if (isPnlStagnant) {
-      await this.closePosition('PNL_STAGNANT', currentPrice, pnl);
+    // Анализ позиции с помощью текущей стратегии
+    let strategyToUse;
+    if (position.strategy === 'DCA') {
+      strategyToUse = this.dcaStrategy;
+    } else if (position.strategy === 'SCALPING') {
+      strategyToUse = this.scalpingStrategy;
     } else {
-      // Проверка необходимости DCA
-      await this.checkAndPlaceDCAOrders(currentPrice);
-    }
-  }
-
-  // Проверка и размещение DCA ордеров
-  async checkAndPlaceDCAOrders(currentPrice) {
-    if (!this.openPosition || this.openPosition.dcaCount >= this.config.maxDCAOrders) {
-      return;
+      strategyToUse = this.currentStrategy;
     }
     
-    const position = this.openPosition;
+    const analysis = await strategyToUse.analyze(currentPrice, marketData);
     
-    // Проверка условий для DCA
-    if (position.direction === 'LONG' && currentPrice < position.entryPrice * (1 - this.config.dcaPriceStep / 100)) {
-      await this.placeDCAOrder(currentPrice);
-    } else if (position.direction === 'SHORT' && currentPrice > position.entryPrice * (1 + this.config.dcaPriceStep / 100)) {
+    // Проверка условий для закрытия позиции
+    if (analysis.shouldExit) {
+      let reason;
+      
+      if (position.strategy === 'SCALPING') {
+        const isTP = position.direction === 'LONG' 
+          ? currentPrice >= position.takeProfitPrice 
+          : currentPrice <= position.takeProfitPrice;
+        
+        const isSL = position.direction === 'LONG' 
+          ? currentPrice <= position.stopLossPrice 
+          : currentPrice >= position.stopLossPrice;
+        
+        if (isTP) reason = 'TAKE_PROFIT';
+        else if (isSL) reason = 'STOP_LOSS';
+        else if (position.trailingStopActive) reason = 'TRAILING_STOP';
+        else reason = 'MAX_DURATION';
+      } else {
+        reason = 'TRAILING_STOP'; // Для DCA стратегии в основном используется trailing stop
+      }
+      
+      await this.closePosition(reason, currentPrice, pnl);
+    } else if (position.strategy === 'DCA' && analysis.shouldDCA) {
+      // Для DCA стратегии проверяем необходимость DCA ордеров
       await this.placeDCAOrder(currentPrice);
     }
   }
@@ -247,7 +416,7 @@ class Bot {
   async placeDCAOrder(currentPrice) {
     try {
       const position = this.openPosition;
-      const dcaSize = position.trade.quantity * Math.pow(this.config.dcaMultiplier, position.dcaCount);
+      const dcaSize = position.trade.quantity * Math.pow(this.config.dca.dcaMultiplier, position.dcaCount);
       
       // Размещение ордера
       const order = await this.api.placeOrder(
@@ -268,7 +437,7 @@ class Bot {
       position.quantity = newQuantity;
       
       // Обновление трейлинг-стопа
-      position.trailingStopPrice = this.calculateTrailingStopPrice(position.entryPrice, position.direction);
+      position.trailingStopPrice = this.dcaStrategy.calculateTrailingStopPrice(position.entryPrice, position.direction);
       
       // Обновление записи в базе данных
       await Trade.updateOne(
@@ -289,11 +458,29 @@ class Bot {
   // Открытие новой позиции
   async openNewPosition(currentPrice) {
     try {
-      // Случайный выбор направления (в реальной стратегии здесь будет анализ рынка)
-      const direction = Math.random() > 0.5 ? 'LONG' : 'SHORT';
+      // Анализ рынка с помощью текущей стратегии
+      const marketData = {};
+      const analysis = await this.currentStrategy.analyze(currentPrice, marketData);
       
-      // Размер позиции с учетом плеча
-      const positionSize = this.stats.currentBalance * this.config.leverage / currentPrice;
+      // Проверка сигнала на вход
+      if (!analysis.shouldEnter) {
+        return; // Нет сигнала для входа
+      }
+      
+      const direction = analysis.direction;
+      const strategy = this.currentStrategy.name;
+      
+      // Расчет размера позиции
+      const positionSize = analysis.entrySize;
+      
+      // Расчет уровней TP/SL для скальпинга
+      let takeProfitPrice = null;
+      let stopLossPrice = null;
+      
+      if (strategy === 'SCALPING') {
+        takeProfitPrice = analysis.takeProfitPrice;
+        stopLossPrice = analysis.stopLossPrice;
+      }
       
       // Размещение ордера
       const order = await this.api.placeOrder(
@@ -312,7 +499,10 @@ class Bot {
         quantity: positionSize,
         entryTime: new Date(),
         status: 'OPEN',
-        dcaCount: 0
+        dcaCount: 0,
+        strategy,
+        takeProfitPrice,
+        stopLossPrice
       });
       
       await trade.save();
@@ -327,10 +517,14 @@ class Bot {
         dcaCount: 0,
         highestPrice: direction === 'LONG' ? currentPrice : Infinity,
         lowestPrice: direction === 'SHORT' ? currentPrice : 0,
-        trailingStopPrice: this.calculateTrailingStopPrice(currentPrice, direction)
+        trailingStopPrice: this.dcaStrategy.calculateTrailingStopPrice(currentPrice, direction),
+        trailingStopActive: strategy === 'DCA', // Для DCA сразу активен, для скальпинга - после достижения порога
+        strategy,
+        takeProfitPrice,
+        stopLossPrice
       };
       
-      console.log(`New position opened for ${this.symbol}: ${direction} at price ${currentPrice}`);
+      console.log(`New position opened for ${this.symbol}: ${direction} at price ${currentPrice} using ${strategy} strategy`);
     } catch (error) {
       console.error(`Error opening new position for ${this.symbol}:`, error);
     }
@@ -346,7 +540,7 @@ class Bot {
       // Если цена закрытия не предоставлена, получаем текущую
       if (!exitPrice) {
         const ticker = await this.api.getTicker(this.symbol);
-        exitPrice = parseFloat(ticker.data.last);
+        exitPrice = parseFloat(ticker.data[0].last);
       }
       
       // Если PnL не предоставлен, рассчитываем
@@ -394,8 +588,8 @@ class Bot {
       this.stats.currentBalance += pnl;
       
       // Реинвестирование прибыли
-      if (pnl > 0 && this.config.reinvestment > 0) {
-        const reinvestAmount = pnl * (this.config.reinvestment / 100);
+      if (pnl > 0 && this.config.common.reinvestment > 0) {
+        const reinvestAmount = pnl * (this.config.common.reinvestment / 100);
         this.stats.currentBalance += reinvestAmount;
       }
       
@@ -404,10 +598,35 @@ class Bot {
       this.stats.hourlyTrades[hour]++;
       this.stats.hourlyPnl[hour] += pnl;
       
+      // Обновление статистики стратегии
+      const strategyName = position.strategy;
+      const strategyStats = this.stats.strategyPerformance[strategyName] || { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 };
+      
+      strategyStats.trades++;
+      
+      // Обновляем средние значения
+      if (pnl > 0) {
+        const winCount = strategyStats.trades * (strategyStats.winRate / 100);
+        const newWinCount = winCount + 1;
+        strategyStats.winRate = (newWinCount / strategyStats.trades) * 100;
+        
+        // Обновляем среднюю прибыль
+        strategyStats.avgProfit = ((strategyStats.avgProfit * winCount) + pnl) / newWinCount;
+      } else if (pnl < 0) {
+        const lossCount = strategyStats.trades * (1 - strategyStats.winRate / 100);
+        const newLossCount = lossCount + 1;
+        strategyStats.winRate = ((strategyStats.trades - newLossCount) / strategyStats.trades) * 100;
+        
+        // Обновляем средний убыток (храним как положительное число)
+        strategyStats.avgLoss = ((strategyStats.avgLoss * lossCount) + Math.abs(pnl)) / newLossCount;
+      }
+      
+      this.stats.strategyPerformance[strategyName] = strategyStats;
+      
       // Сброс открытой позиции
       this.openPosition = null;
       
-      console.log(`Position closed for ${this.symbol} at price ${exitPrice}, PnL: ${pnl}, reason: ${reason}`);
+      console.log(`Position closed for ${this.symbol} at price ${exitPrice}, PnL: ${pnl}, reason: ${reason}, strategy: ${position.strategy}`);
     } catch (error) {
       console.error(`Error closing position for ${this.symbol}:`, error);
     }
@@ -416,6 +635,37 @@ class Bot {
   // Обновление конфигурации
   updateConfig(newConfig) {
     this.config = { ...this.config, ...newConfig };
+    
+    // Обновляем конфигурацию в стратегиях
+    this.dcaStrategy = new DCAStrategy(this.symbol, this.config, this.api);
+    this.scalpingStrategy = new ScalpingStrategy(this.symbol, this.config, this.api);
+    this.marketAnalyzer = new MarketAnalyzer(this.symbol, this.config, this.api);
+    
+    // Обновляем активную стратегию
+    this.activeStrategy = this.config.activeStrategy || 'AUTO';
+    
+    // Сразу обновляем используемую стратегию, если она фиксирована
+    if (this.activeStrategy === 'DCA') {
+      this.currentStrategy = this.dcaStrategy;
+    } else if (this.activeStrategy === 'SCALPING') {
+      this.currentStrategy = this.scalpingStrategy;
+    }
+  }
+
+  // Принудительная смена стратегии
+  setStrategy(strategy) {
+    if (strategy === 'DCA') {
+      this.activeStrategy = 'DCA';
+      this.currentStrategy = this.dcaStrategy;
+    } else if (strategy === 'SCALPING') {
+      this.activeStrategy = 'SCALPING';
+      this.currentStrategy = this.scalpingStrategy;
+    } else if (strategy === 'AUTO') {
+      this.activeStrategy = 'AUTO';
+      // Реальную стратегию обновим при следующем анализе рынка
+    }
+    
+    return this.currentStrategy.name;
   }
 
   // Проверка статуса бота
@@ -442,8 +692,11 @@ class Bot {
         entryPrice: this.openPosition.entryPrice,
         currentPrice: null, // Заполняется при вызове
         pnl: null, // Заполняется при вызове
-        duration: Math.floor((Date.now() - new Date(this.openPosition.entryTime).getTime()) / 60000)
-      } : null
+        duration: Math.floor((Date.now() - new Date(this.openPosition.entryTime).getTime()) / 60000),
+        strategy: this.openPosition.strategy
+      } : null,
+      activeStrategy: this.currentStrategy.name,
+      lastMarketAnalysis: this.stats.lastMarketAnalysis
     };
   }
 }

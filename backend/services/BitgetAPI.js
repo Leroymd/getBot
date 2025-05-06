@@ -1,3 +1,4 @@
+// backend/services/BitgetAPI.js
 const crypto = require('crypto');
 const axios = require('axios');
 const config = require('../config');
@@ -58,7 +59,7 @@ class BitgetAPI {
       let queryString = '';
       
       // Обрабатываем GET параметры
-      if (Object.keys(params).length > 0 && method.toUpperCase() === 'GET') {
+      if (params && Object.keys(params).length > 0 && method.toUpperCase() === 'GET') {
         queryString = '?' + querystring.stringify(params);
         requestPath += queryString;
         url += queryString;
@@ -101,12 +102,11 @@ class BitgetAPI {
     }
   }
 
-  
- // Получение баланса аккаунта
-async getAccountBalance() {
-  // Используем актуальный эндпоинт из API v2
-  return this.request('GET', '/api/v2/mix/account/accounts', { productType: "USDT-FUTURES" });
-}
+  // Получение баланса аккаунта
+  async getAccountBalance() {
+    // Используем актуальный эндпоинт из API v2
+    return this.request('GET', '/api/v2/mix/account/accounts', { productType: "USDT-FUTURES" });
+  }
 
   // Получение открытых позиций
   async getPositions(symbol = '') {
@@ -147,6 +147,82 @@ async getAccountBalance() {
       symbol,
       productType: "USDT-FUTURES"
     });
+  }
+
+  // Установка плеча для символа
+  async setLeverage(symbol, leverage) {
+    const endpoint = '/api/v2/mix/account/set-leverage';
+    const data = {
+      symbol,
+      marginCoin: 'USDT',
+      leverage: leverage.toString(),
+      holdSide: 'long_short',
+      productType: "USDT-FUTURES"
+    };
+    
+    return this.request('POST', endpoint, {}, data);
+  }
+
+  // Размещение ордера
+  async placeOrder(symbol, side, orderType, size, price = null, reduceOnly = false) {
+    const endpoint = '/api/v2/mix/order/place';
+    const data = {
+      symbol,
+      marginCoin: 'USDT',
+      size: size.toString(),
+      side: side.toUpperCase(),
+      orderType: orderType.toUpperCase(),
+      productType: "USDT-FUTURES",
+      reduceOnly: reduceOnly
+    };
+    
+    if (price !== null) {
+      data.price = price.toString();
+    }
+    
+    return this.request('POST', endpoint, {}, data);
+  }
+
+  // Отмена ордера
+  async cancelOrder(symbol, orderId) {
+    const endpoint = '/api/v2/mix/order/cancel';
+    const data = {
+      symbol,
+      orderId,
+      productType: "USDT-FUTURES",
+      marginCoin: 'USDT'
+    };
+    
+    return this.request('POST', endpoint, {}, data);
+  }
+
+  // Получение истории сделок
+  async getTradeHistory(symbol, limit = 100) {
+    return this.request('GET', '/api/v2/mix/order/fills', {
+      symbol,
+      productType: "USDT-FUTURES",
+      limit
+    });
+  }
+  
+  // Проверка валидности API ключей
+  async validateKeys(verbose = true) {
+    try {
+      if (verbose) console.log('Проверка API ключей BitGet...');
+      
+      const response = await this.getAccountBalance();
+      
+      if (response && response.code === '00000') {
+        if (verbose) console.log('✅ API ключи BitGet валидны');
+        return true;
+      } else {
+        if (verbose) console.error('❌ API ключи BitGet невалидны:', response);
+        return false;
+      }
+    } catch (error) {
+      if (verbose) console.error('❌ Ошибка проверки API ключей BitGet:', error.message);
+      return false;
+    }
   }
 }
 

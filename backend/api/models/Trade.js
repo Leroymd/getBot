@@ -1,3 +1,4 @@
+// backend/api/models/Trade.js
 const mongoose = require('mongoose');
 
 const tradeSchema = new mongoose.Schema({
@@ -44,9 +45,23 @@ const tradeSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  strategy: {
+    type: String,
+    enum: ['DCA', 'SCALPING'],
+    default: 'DCA'
+  },
   closeReason: {
     type: String,
     enum: ['TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MAX_DURATION', 'MANUAL', 'PNL_STAGNANT']
+  },
+  takeProfitPrice: {
+    type: Number
+  },
+  stopLossPrice: {
+    type: Number
+  },
+  marketConditions: {
+    type: Object
   }
 });
 

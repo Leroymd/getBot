@@ -13,6 +13,8 @@ console.log('Demo Mode:', process.env.BITGET_DEMO === 'true' ?
   'Enabled' : 'Disabled');
 console.log('================================');
 
+
+
 module.exports = {
   port: process.env.PORT || 5000,
   dbUri: process.env.MONGODB_URI || 'mongodb://localhost:27017/bitget-bot',

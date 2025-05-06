@@ -12,13 +12,7 @@ exports.getBalance = async (req, res) => {
     console.error('Ошибка получения баланса:', error);
     res.status(500).json({ 
       error: error.message,
-      code: 'ERROR_GET_BALANCE',
-      // Возвращаем фиктивные данные для работы фронтенда при ошибке
-      data: {
-        usdtEquity: 1000.00,
-        equity: 1000.00,
-        available: 1000.00
-      }
+      code: 'ERROR_GET_BALANCE'
     });
   }
 };
@@ -35,8 +29,7 @@ exports.getPositions = async (req, res) => {
     console.error('Ошибка получения позиций:', error);
     res.status(500).json({ 
       error: error.message,
-      code: 'ERROR_GET_POSITIONS',
-      data: [] 
+      code: 'ERROR_GET_POSITIONS'
     });
   }
 };
@@ -53,8 +46,7 @@ exports.getOrders = async (req, res) => {
     console.error('Ошибка получения ордеров:', error);
     res.status(500).json({ 
       error: error.message,
-      code: 'ERROR_GET_ORDERS',
-      data: [] 
+      code: 'ERROR_GET_ORDERS'
     });
   }
 };

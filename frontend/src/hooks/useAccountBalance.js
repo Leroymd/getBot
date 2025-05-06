@@ -1,48 +1,44 @@
+// frontend/src/hooks/useAccountBalance.js
 import { useState, useEffect } from 'react';
 import { getAccountBalance } from '../services/accountService';
 
-const useAccountBalance = () => {
+function useAccountBalance() {
   const [balance, setBalance] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    let isMounted = true;
-    
     const fetchBalance = async () => {
       try {
         setLoading(true);
-        const data = await getAccountBalance();
+        const response = await getAccountBalance();
         
-        if (isMounted) {
-          console.log('Account balance data:', data);
-          setBalance(data);
-          setError(null);
+        // ѕровер€ем структуру ответа API
+        if (response && response.data) {
+          // Ќова€ структура ответа API BitGet
+          setBalance(response);
+        } else {
+          throw new Error('Invalid response format');
         }
+        
+        setError(null);
       } catch (err) {
-        console.error('Error getting account balance:', err);
-        if (isMounted) {
-          setError(err);
-        }
+        console.error('Error fetching account balance:', err);
+        setError(err);
       } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
+        setLoading(false);
       }
     };
 
     fetchBalance();
-
-    // ќбновление каждые 15 секунд дл€ более оперативного отображени€ баланса
-    const interval = setInterval(fetchBalance, 15000);
-
-    return () => {
-      isMounted = false;
-      clearInterval(interval);
-    };
+    
+    // ќбновл€ем баланс каждые 30 секунд
+    const interval = setInterval(fetchBalance, 30000);
+    
+    return () => clearInterval(interval);
   }, []);
 
   return { balance, loading, error };
-};
+}
 
 export default useAccountBalance;

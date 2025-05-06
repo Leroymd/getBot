@@ -1,17 +1,29 @@
+// frontend/src/services/api.js
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
-
+// Создаем инстанс axios с базовым URL
 const api = axios.create({
-  baseURL: API_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  baseURL: process.env.REACT_APP_API_URL || 'http://localhost:5000/api',
+  timeout: 30000 // 30 секунд
 });
 
-// Interceptор для обработки ошибок
+// Перехватчик запросов для добавления заголовков
+api.interceptors.request.use(
+  (config) => {
+    // Можно добавить токены авторизации или другие заголовки
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Перехватчик ответов для обработки ошибок
 api.interceptors.response.use(
-  (response) => response.data,
+  (response) => {
+    // Извлекаем данные из ответа
+    return response.data;
+  },
   (error) => {
     console.error('API Error:', error);
     return Promise.reject(error);
