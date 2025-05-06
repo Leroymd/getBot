@@ -8,6 +8,7 @@ function useBotStats(symbol, interval = 30000) {
   const [uptime, setUptime] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [message, setMessage] = useState('');
 
   const fetchStats = async () => {
     if (!symbol) return;
@@ -16,17 +17,25 @@ function useBotStats(symbol, interval = 30000) {
       setLoading(true);
       const response = await getBotStatus(symbol);
       
-      // Проверка наличия данных в ответе
+      console.log('Bot status response:', response);
+      
+      // Проверка наличия ответа
       if (response) {
         setStats(response.stats || null);
-        setRunning(response.running || false);
+        setRunning(response.running === true);
         setUptime(response.uptime || 0);
+        setMessage(response.message || '');
+      } else {
+        console.warn('Empty response from bot status API');
+        setRunning(false);
+        setMessage('No response from server');
       }
       
       setError(null);
     } catch (err) {
       console.error('Error fetching bot stats:', err);
       setError(err.message || 'Failed to load bot statistics');
+      setRunning(false);
     } finally {
       setLoading(false);
     }
@@ -41,7 +50,7 @@ function useBotStats(symbol, interval = 30000) {
     return () => clearInterval(timer);
   }, [symbol, interval]);
 
-  return { stats, running, uptime, loading, error, refresh: fetchStats };
+  return { stats, running, uptime, message, loading, error, refresh: fetchStats };
 }
 
 export default useBotStats;

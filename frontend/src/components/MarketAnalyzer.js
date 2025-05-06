@@ -1,4 +1,16 @@
-// frontend/src/components/MarketAnalyzer.js
+// Исправление во frontend/src/components/MarketAnalyzer.js
+// Где-то в коде вы пытаетесь использовать MarketAnalyzer как функцию, а не как класс
+
+// Вместо этого:
+// const analyzer = MarketAnalyzer(symbol, config, api);
+
+// Нужно использовать:
+// const analyzer = new MarketAnalyzer(symbol, config, api);
+
+// Однако, скорее всего, этот компонент вообще не должен создавать экземпляр
+// класса MarketAnalyzer напрямую, поскольку это серверный класс.
+// Вместо этого, компонент должен взаимодействовать с API
+
 import React, { useState, useEffect } from 'react';
 import { 
   Box, 
@@ -28,7 +40,9 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
     try {
       setLoading(true);
       setError(null);
-      const result = await analyzeMarket(symbol);
+      // Изменим вызов для добавления случайного значения, чтобы избежать кэширования
+      const cacheBuster = `&_=${Date.now()}`;
+      const result = await analyzeMarket(`${symbol}${cacheBuster}`);
       setAnalysis(result);
     } catch (err) {
       console.error('Error analyzing market:', err);
@@ -57,6 +71,11 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
       // Обновляем статистику, если есть callback
       if (refreshStats) {
         refreshStats();
+      }
+      
+      // Уведомляем родительский компонент об изменении стратегии
+      if (onStrategyChange) {
+        onStrategyChange();
       }
     } catch (err) {
       console.error('Error setting strategy:', err);
@@ -92,7 +111,7 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
           onClick={fetchAnalysis}
           disabled={loading}
         >
-          Обновить анализ
+          {loading ? 'Обновление...' : 'Обновить анализ'}
         </Button>
       </Box>
       
@@ -173,7 +192,7 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
               </Grid>
               <Grid item xs={6}>
                 <Typography variant="body2">
-                  {analysis.volumeRatio.toFixed(2)}x
+                  {analysis.volumeRatio?.toFixed(2) || "N/A"}x
                 </Typography>
               </Grid>
               
@@ -184,7 +203,7 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
               </Grid>
               <Grid item xs={6}>
                 <Typography variant="body2">
-                  {analysis.trendStrength.toFixed(2)}
+                  {analysis.trendStrength?.toFixed(2) || "N/A"}
                 </Typography>
               </Grid>
             </Grid>

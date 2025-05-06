@@ -4,7 +4,10 @@ import api from './api';
 // Вспомогательная функция для обработки ошибок API
 const handleApiError = (error, defaultMessage) => {
   console.error(defaultMessage, error);
-  throw error.response?.data?.error || error.message || defaultMessage;
+  if (error.response && error.response.data && error.response.data.error) {
+    throw new Error(error.response.data.error);
+  }
+  throw error.message ? error : new Error(defaultMessage);
 };
 
 export const getBotStatus = async (symbol) => {
@@ -74,7 +77,9 @@ export const setStrategy = async (symbol, strategy) => {
 
 export const analyzeMarket = async (symbol) => {
   try {
-    const response = await api.get(`/bot/market-analysis?symbol=${symbol}`);
+    // Убедимся, что мы передаем только символ без дополнительных параметров
+    const cleanSymbol = symbol.split('&')[0]; // Удаляем любые дополнительные параметры
+    const response = await api.get(`/bot/market-analysis?symbol=${cleanSymbol}`);
     return response;
   } catch (error) {
     return handleApiError(error, 'Error analyzing market');

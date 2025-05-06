@@ -7,66 +7,107 @@ const MarketAnalyzer = require('./MarketAnalyzer');
 const { v4: uuidv4 } = require('uuid');
 
 class Bot {
-  constructor(symbol, config) {
-    this.symbol = symbol;
-    this.config = config;
-    this.api = new BitgetAPI();
-    this.isActive = false;
-    this.startTime = null;
-    this.lastTick = null;
-    this.interval = null;
-    this.botId = uuidv4();
-    this.openPosition = null;
-    this.dcaOrders = [];
-    
-    // Инициализация стратегий
-    this.dcaStrategy = new DCAStrategy(symbol, config, this.api);
-    this.scalpingStrategy = new ScalpingStrategy(symbol, config, this.api);
-    this.marketAnalyzer = new MarketAnalyzer(symbol, config, this.api);
-    
-    // Текущая активная стратегия
-    this.activeStrategy = config.activeStrategy || 'AUTO';
-    this.currentStrategy = this.dcaStrategy; // По умолчанию DCA
-    
-    this.stats = {
-      totalTrades: 0,
-      winTrades: 0,
-      lossTrades: 0,
-      totalPnl: 0,
-      maxDrawdown: 0,
-      currentBalance: config.common.initialBalance || 100,
-      initialBalance: config.common.initialBalance || 100,
-      tradesToday: 0,
-      hourlyTrades: Array(24).fill(0),
-      hourlyPnl: Array(24).fill(0),
-      strategyPerformance: {
-        DCA: {
-          trades: 0,
-          winRate: 0,
-          avgProfit: 0,
-          avgLoss: 0
-        },
-        SCALPING: {
-          trades: 0,
-          winRate: 0,
-          avgProfit: 0,
-          avgLoss: 0
-        }
-      },
-      lastMarketAnalysis: {
-        timestamp: 0,
-        recommendedStrategy: 'DCA',
-        marketType: 'UNKNOWN',
-        volatility: 0,
-        volumeRatio: 0,
-        trendStrength: 0,
-        confidence: 0
-      }
-    };
-  }
+  // Исправления для backend/services/Bot.js
 
-  // Инициализация бота
-  async initialize() {
+// Конструктор класса Bot.js
+constructor(symbol, config) {
+  this.symbol = symbol;
+  this.config = config || {
+    activeStrategy: 'AUTO',
+    common: {
+      enabled: true,
+      leverage: 10,
+      initialBalance: 100,
+      reinvestment: 100
+    },
+    dca: {
+      maxDCAOrders: 5,
+      dcaPriceStep: 1.5,
+      dcaMultiplier: 1.5,
+      maxTradeDuration: 240,
+      trailingStop: 0.5
+    },
+    scalping: {
+      timeframe: '1m',
+      profitTarget: 0.5,
+      stopLoss: 0.3,
+      maxTradeDuration: 30,
+      minVolatility: 0.2,
+      maxSpread: 0.1,
+      useTrailingStop: true,
+      trailingStopActivation: 0.2,
+      trailingStopDistance: 0.1
+    },
+    autoSwitching: {
+      enabled: true,
+      volatilityThreshold: 1.5,
+      volumeThreshold: 2.0,
+      trendStrengthThreshold: 0.6
+    }
+  };
+  this.api = new BitgetAPI();
+  this.isActive = false;
+  this.startTime = null;
+  this.lastTick = null;
+  this.interval = null;
+  this.botId = uuidv4();
+  this.openPosition = null;
+  this.dcaOrders = [];
+  
+  // Инициализация стратегий
+  try {
+    this.dcaStrategy = new DCAStrategy(symbol, this.config, this.api);
+    this.scalpingStrategy = new ScalpingStrategy(symbol, this.config, this.api);
+    this.marketAnalyzer = new MarketAnalyzer(symbol, this.config, this.api);
+  } catch (error) {
+    console.error(`Error initializing strategies for ${symbol}:`, error);
+    throw error;
+  }
+  
+  // Текущая активная стратегия
+  this.activeStrategy = this.config.activeStrategy || 'AUTO';
+  this.currentStrategy = this.dcaStrategy; // По умолчанию DCA
+  
+  // Инициализируем статистику
+  this.stats = {
+    totalTrades: 0,
+    winTrades: 0,
+    lossTrades: 0,
+    totalPnl: 0,
+    maxDrawdown: 0,
+    currentBalance: this.config.common.initialBalance || 100,
+    initialBalance: this.config.common.initialBalance || 100,
+    tradesToday: 0,
+    hourlyTrades: Array(24).fill(0),
+    hourlyPnl: Array(24).fill(0),
+    strategyPerformance: {
+      DCA: {
+        trades: 0,
+        winRate: 0,
+        avgProfit: 0,
+        avgLoss: 0
+      },
+      SCALPING: {
+        trades: 0,
+        winRate: 0,
+        avgProfit: 0,
+        avgLoss: 0
+      }
+    },
+    lastMarketAnalysis: {
+      timestamp: 0,
+      recommendedStrategy: 'DCA',
+      marketType: 'UNKNOWN',
+      volatility: 0,
+      volumeRatio: 0,
+      trendStrength: 0,
+      confidence: 0
+    }
+  };
+}
+
+// Инициализация бота с улучшенной обработкой ошибок
+async initialize() {
   try {
     // Установка плеча (с обработкой возможных ошибок)
     try {
@@ -77,13 +118,25 @@ class Bot {
     }
     
     // Загрузка истории сделок из базы данных
-    const trades = await Trade.find({ botId: this.botId, symbol: this.symbol }).sort({ entryTime: -1 });
+    let trades = [];
+    try {
+      trades = await Trade.find({ botId: this.botId, symbol: this.symbol }).sort({ entryTime: -1 });
+      console.log(`Loaded ${trades.length} trades from database for ${this.symbol}`);
+    } catch (dbError) {
+      console.warn(`Failed to load trades from database: ${dbError.message}`);
+    }
     
     // Обновление статистики на основе истории
     this.updateStatsFromHistory(trades);
     
     // Первичный анализ рынка
-    await this.updateActiveStrategy();
+    try {
+      await this.updateActiveStrategy();
+      console.log(`Strategy selected for ${this.symbol}: ${this.currentStrategy.name}`);
+    } catch (strategyError) {
+      console.warn(`Error selecting strategy: ${strategyError.message}. Using DCA as fallback.`);
+      this.currentStrategy = this.dcaStrategy;
+    }
     
     console.log(`Bot initialized for ${this.symbol} with leverage ${this.config.common.leverage}x, active strategy: ${this.currentStrategy.name}`);
   } catch (error) {
@@ -91,6 +144,7 @@ class Bot {
     throw error;
   }
 }
+  
 
   // Обновление активной стратегии на основе рыночных условий
   async updateActiveStrategy() {
