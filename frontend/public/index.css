@@ -1,0 +1,71 @@
+
+// frontend/src/index.css
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #121212;
+  color: #e0e0e0;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+.tradingview-chart {
+  width: 100%;
+  height: 500px;
+}
+
+/* Настройка скроллбара */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #4a4a4a;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* Стили для таблиц */
+.MuiTableRow-root.highlight {
+  background-color: rgba(144, 202, 249, 0.08);
+}
+
+.profitable {
+  color: #4caf50 !important;
+}
+
+.loss {
+  color: #f44336 !important;
+}
+
+/* Анимации для загрузки */
+@keyframes pulse {
+  0% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.6;
+  }
+}
+
+.loading-pulse {
+  animation: pulse 1.5s infinite ease-in-out;
+}
