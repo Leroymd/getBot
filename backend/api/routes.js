@@ -15,6 +15,8 @@ router.get('/bot/config', botController.getConfig);
 router.get('/bot/stats', botController.getStats);
 router.post('/bot/strategy', botController.setStrategy);
 router.get('/bot/market-analysis', botController.analyzeMarket);
+// Новый маршрут для сканирования пар
+router.get('/bot/scan-pairs', botController.scanPairs);
 
 // Маршруты для аккаунта
 router.get('/account/balance', accountController.getBalance);

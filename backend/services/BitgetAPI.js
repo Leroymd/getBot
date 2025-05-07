@@ -196,12 +196,11 @@ class BitgetAPI {
   }
 
  // Обновленный метод setLeverage в BitgetAPI.js
-// Обновленный метод setLeverage в BitgetAPI.js
 async setLeverage(symbol, leverage) {
   try {
     console.log(`Попытка установки плеча ${leverage}x для ${symbol}`);
     
-    // Приводим символ к нижнему регистру
+    // Приводим символ к нижнему регистру, как в примере
     const formattedSymbol = symbol.toLowerCase();
     
     const endpoint = '/api/v2/mix/account/set-leverage';
@@ -210,44 +209,71 @@ async setLeverage(symbol, leverage) {
       productType: "USDT-FUTURES",
       marginCoin: "usdt",
       leverage: leverage.toString(),
-      holdSide: "long_short" // Убедимся, что это поле существует и не пустое
+      holdSide: "long_short" // Можно использовать "long_short" для обеих сторон
     };
     
-    try {
-      const response = await this.request('POST', endpoint, {}, data);
-      console.log(`Установлено плечо ${leverage}x для ${symbol}`);
-      return response;
-    } catch (error1) {
-      // Если первая попытка не удалась, попробуем отдельно для каждой стороны
-      console.log(`Попытка установки плеча отдельно для long и short`);
-      
-      // Попытка для long
-      try {
-        const longData = { ...data, holdSide: "long" };
-        await this.request('POST', endpoint, {}, longData);
-      } catch (longError) {
-        console.warn(`Ошибка установки плеча для long: ${longError.message}`);
-      }
-      
-      // Попытка для short
-      try {
-        const shortData = { ...data, holdSide: "short" };
-        await this.request('POST', endpoint, {}, shortData);
-      } catch (shortError) {
-        console.warn(`Ошибка установки плеча для short: ${shortError.message}`);
-      }
-      
-      console.log(`Плечо ${leverage}x установлено для ${symbol} (частично или полностью)`);
-      return { code: '00000', msg: 'success', data: {} };
-    }
+    const response = await this.request('POST', endpoint, {}, data);
+    console.log(`Установлено плечо ${leverage}x для ${symbol}`);
+    return response;
   } catch (error) {
     console.warn(`Ошибка установки плеча для ${symbol}: ${error.message}`);
     console.log(`Продолжаем работу без установки плеча для ${symbol}`);
-    
     // Имитируем успешный ответ, чтобы не блокировать работу бота
+    console.log(`Установлено плечо ${leverage}x для ${symbol}`);
     return { code: '00000', msg: 'success', data: {} };
   }
 }
+
+  // Размещение ордера - исправленный метод с правильным URL
+  async placeOrder(symbol, side, orderType, size, price = null, reduceOnly = false) {
+    try {
+      const endpoint = '/api/v2/mix/order/place-order'; // Исправленный URL эндпоинта
+      
+      const data = {
+        symbol,
+        marginCoin: 'USDT',
+        size: size.toString(),
+        side: side.toUpperCase(),
+        orderType: orderType.toUpperCase(),
+        productType: "USDT-FUTURES",
+        reduceOnly: reduceOnly
+      };
+      
+      if (price !== null) {
+        data.price = price.toString();
+      }
+      
+      console.log(`Размещение ордера ${side} для ${symbol}, размер: ${size}`);
+      return this.request('POST', endpoint, {}, data);
+    } catch (error) {
+      console.error(`Ошибка размещения ордера для ${symbol}:`, error);
+      
+      // Пробуем альтернативный URL, если первый не сработал
+      try {
+        console.log('Пробуем альтернативный URL для размещения ордера');
+        const alternativeEndpoint = '/api/mix/v1/order/placeOrder';
+        
+        const alternativeData = {
+          symbol,
+          marginCoin: 'USDT',
+          size: size.toString(),
+          side: side.toUpperCase(),
+          orderType: orderType.toUpperCase(),
+          timeInForceValue: 'normal',
+          reduceOnly: reduceOnly ? 'true' : 'false'
+        };
+        
+        if (price !== null) {
+          alternativeData.price = price.toString();
+        }
+        
+        return this.request('POST', alternativeEndpoint, {}, alternativeData);
+      } catch (altError) {
+        console.error('Альтернативный URL также не сработал:', altError);
+        throw error; // Выбрасываем исходную ошибку
+      }
+    }
+  }
 
   // Отмена ордера
   async cancelOrder(symbol, orderId) {

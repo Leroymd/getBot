@@ -1,16 +1,20 @@
 // frontend/src/services/api.js
 import axios from 'axios';
 
-// Создаем инстанс axios с базовым URL
+// Создаем инстанс axios с базовым URL и настройками
 const api = axios.create({
-  baseURL: process.env.REACT_APP_API_URL || 'http://localhost:5000/api',
-  timeout: 30000 // 30 секунд
+  baseURL: 'http://localhost:5000/api', // Убедитесь, что это совпадает с адресом вашего бэкенда
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  // Настройки для CORS
+  withCredentials: true // Разрешаем отправку куки между доменами
 });
 
-// Перехватчик запросов для добавления заголовков
+// Интерцептор для обработки запросов
 api.interceptors.request.use(
   (config) => {
-    // Можно добавить токены авторизации или другие заголовки
+    // Можно добавить токен авторизации или другие заголовки
     return config;
   },
   (error) => {
@@ -18,14 +22,22 @@ api.interceptors.request.use(
   }
 );
 
-// Перехватчик ответов для обработки ошибок
+// Интерцептор для обработки ответов
 api.interceptors.response.use(
   (response) => {
-    // Извлекаем данные из ответа
+    // Возвращаем данные из ответа
     return response.data;
   },
   (error) => {
+    // Обработка ошибок
     console.error('API Error:', error);
+
+    // Если ошибка связана с CORS, добавляем информативное сообщение
+    if (error.message === 'Network Error') {
+      console.error('Possible CORS issue. Check server CORS settings.');
+    }
+    
+    // Возвращаем reject промиса с ошибкой для дальнейшей обработки
     return Promise.reject(error);
   }
 );

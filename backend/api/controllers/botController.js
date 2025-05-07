@@ -1,23 +1,43 @@
 // backend/api/controllers/botController.js
+// Добавьте в начало файла инициализацию объекта activeBots
+
+// Импорты
 const Bot = require('../../services/Bot');
 const BotConfig = require('../models/BotConfig');
 const BitgetAPI = require('../../services/BitgetAPI');
 const MarketAnalyzer = require('../../services/MarketAnalyzer');
 
+// Объект для хранения активных ботов
 let activeBots = {};
 
-// Исправление для backend/api/controllers/botController.js - метод startBot
-
+/**
+ * Запустить бота для указанного символа
+ * @route POST /api/bot/start
+ */
 exports.startBot = async (req, res) => {
   try {
-    const { symbol, config } = req.body;
+    const { symbol, config, forceRestart } = req.body;
     
     if (!symbol) {
       return res.status(400).json({ error: 'Symbol is required' });
     }
 
-    if (activeBots[symbol]) {
-      return res.status(400).json({ error: 'Bot already running for this symbol' });
+    // Проверяем, запущен ли уже бот для этого символа
+    if (activeBots[symbol] && activeBots[symbol].isRunning && activeBots[symbol].isRunning() && !forceRestart) {
+      return res.status(400).json({ 
+        error: 'Bot already running for this symbol',
+        botStatus: {
+          running: true,
+          stats: activeBots[symbol].getStats()
+        }
+      });
+    }
+
+    // Если указан принудительный перезапуск, останавливаем существующий бот
+    if (activeBots[symbol] && activeBots[symbol].isRunning && activeBots[symbol].isRunning() && forceRestart) {
+      console.log(`Force restarting bot for ${symbol}...`);
+      await activeBots[symbol].stop();
+      delete activeBots[symbol];
     }
 
     // Значения по умолчанию для конфигурации
@@ -56,77 +76,41 @@ exports.startBot = async (req, res) => {
     };
 
     // Получаем конфигурацию из базы данных или используем предоставленную
-    let botConfig;
-    try {
-      // Проверяем, существует ли конфигурация для данного символа
-      const dbConfig = await BotConfig.findOne({ symbol });
-      
-      if (dbConfig) {
-        // Используем существующую конфигурацию из БД
-        botConfig = {
-          activeStrategy: dbConfig.activeStrategy,
-          common: dbConfig.common,
-          dca: dbConfig.dca,
-          scalping: dbConfig.scalping,
-          autoSwitching: dbConfig.autoSwitching
-        };
-      } else if (config) {
-        // Используем предоставленную конфигурацию
-        botConfig = config;
+    let botConfig = config;
+    if (!config) {
+      const savedConfig = await BotConfig.findOne({ symbol });
+      if (savedConfig) {
+        botConfig = savedConfig.config;
       } else {
-        // Если ничего нет, используем значения по умолчанию
         botConfig = defaultConfig;
-        
-        // Создаем запись в БД для будущего использования
-        const newConfig = new BotConfig({
-          symbol,
-          ...defaultConfig
-        });
-        await newConfig.save();
       }
-    } catch (configError) {
-      console.warn(`Could not retrieve config from database: ${configError.message}, using default config`);
-      botConfig = defaultConfig;
     }
 
     // Создаем новый экземпляр бота с полной конфигурацией
-    try {
-      const bot = new Bot(symbol, botConfig);
-      
-      // Инициализируем и запускаем бота
-      await bot.initialize();
-      bot.start();
-      
-      // Сохраняем бота в активных ботах
-      activeBots[symbol] = bot;
-      
-      // Определяем текущую активную стратегию
-      let activeStrategyName = "DCA";
-      if (bot.currentStrategy && typeof bot.currentStrategy.name === 'string') {
-        activeStrategyName = bot.currentStrategy.name;
-      }
-      
-      res.json({ 
-        success: true, 
-        message: `Bot started for ${symbol}`, 
-        activeStrategy: activeStrategyName
-      });
-    } catch (botError) {
-      console.error(`Error creating or initializing bot for ${symbol}:`, botError);
-      return res.status(500).json({ 
-        error: `Failed to start bot: ${botError.message}`,
-        stack: process.env.NODE_ENV === 'development' ? botError.stack : undefined 
-      });
-    }
+    const bot = new Bot(symbol, botConfig);
+    await bot.initialize();
+    
+    // Запускаем бота
+    bot.start();
+    
+    // Сохраняем бота в активных ботах
+    activeBots[symbol] = bot;
+    
+    res.json({ 
+      success: true, 
+      message: `Bot started for ${symbol}`, 
+      activeStrategy: bot.currentStrategy.name 
+    });
   } catch (error) {
     console.error('Error starting bot:', error);
-    res.status(500).json({ 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    res.status(500).json({ error: error.message });
   }
 };
 
+/**
+ * Остановить бота для указанного символа
+ * @route POST /api/bot/stop
+ */
 exports.stopBot = async (req, res) => {
   try {
     const { symbol } = req.body;
@@ -152,6 +136,10 @@ exports.stopBot = async (req, res) => {
   }
 };
 
+/**
+ * Получить статус бота
+ * @route GET /api/bot/status
+ */
 exports.getBotStatus = async (req, res) => {
   try {
     const { symbol } = req.query;
@@ -159,45 +147,54 @@ exports.getBotStatus = async (req, res) => {
     if (!symbol) {
       // Возвращаем статус всех ботов
       const statuses = {};
-      
-      // Проверка на наличие активных ботов
-      if (Object.keys(activeBots).length === 0) {
-        return res.json({
-          message: "No active bots found",
-          bots: {}
-        });
-      }
-      
-      // Собираем информацию о всех активных ботах
       for (const [sym, bot] of Object.entries(activeBots)) {
         try {
+          // Получаем ticker для расчета текущего PnL
+          let currentPrice = null;
+          try {
+            const ticker = await bot.api.getTicker(sym);
+            if (ticker && ticker.data && ticker.data[0]) {
+              currentPrice = parseFloat(ticker.data[0].last);
+            }
+          } catch (tickerError) {
+            console.warn(`Failed to get current price for ${sym}:`, tickerError.message);
+          }
+          
+          // Получаем статистику бота
+          const stats = bot.getStats();
+          
+          // Если есть открытая позиция и текущая цена, рассчитываем PnL
+          if (stats.openPosition && currentPrice) {
+            stats.openPosition.currentPrice = currentPrice;
+            
+            // Расчет PnL для открытой позиции
+            if (stats.openPosition.direction === 'LONG') {
+              stats.openPosition.pnl = (currentPrice - stats.openPosition.entryPrice) / stats.openPosition.entryPrice * 100;
+            } else { // SHORT
+              stats.openPosition.pnl = (stats.openPosition.entryPrice - currentPrice) / stats.openPosition.entryPrice * 100;
+            }
+          }
+          
           statuses[sym] = {
             running: bot.isRunning(),
             uptime: bot.getUptime(),
-            stats: bot.getStats()
+            stats
           };
         } catch (botError) {
           console.error(`Error getting status for bot ${sym}:`, botError);
           statuses[sym] = {
-            running: true,
-            error: botError.message,
-            uptime: 0,
-            stats: {}
+            running: false,
+            error: botError.message
           };
         }
       }
-      
-      return res.json({
-        message: `${Object.keys(statuses).length} active bots found`,
-        bots: statuses
-      });
+      return res.json(statuses);
     }
 
-    // Проверка существования бота для указанного символа
+    // Если символ указан, возвращаем статус только этого бота
     if (!activeBots[symbol]) {
       return res.json({ 
         running: false,
-        message: `No active bot found for ${symbol}`,
         stats: {
           totalTrades: 0,
           winTrades: 0,
@@ -227,24 +224,43 @@ exports.getBotStatus = async (req, res) => {
       });
     }
 
-    // Возвращаем статус бота для указанного символа
     try {
-      const botStatus = {
+      // Получаем ticker для расчета текущего PnL
+      let currentPrice = null;
+      try {
+        const ticker = await activeBots[symbol].api.getTicker(symbol);
+        if (ticker && ticker.data && ticker.data[0]) {
+          currentPrice = parseFloat(ticker.data[0].last);
+        }
+      } catch (tickerError) {
+        console.warn(`Failed to get current price for ${symbol}:`, tickerError.message);
+      }
+      
+      // Получаем статистику бота
+      const stats = activeBots[symbol].getStats();
+      
+      // Если есть открытая позиция и текущая цена, рассчитываем PnL
+      if (stats.openPosition && currentPrice) {
+        stats.openPosition.currentPrice = currentPrice;
+        
+        // Расчет PnL для открытой позиции
+        if (stats.openPosition.direction === 'LONG') {
+          stats.openPosition.pnl = (currentPrice - stats.openPosition.entryPrice) / stats.openPosition.entryPrice * 100;
+        } else { // SHORT
+          stats.openPosition.pnl = (stats.openPosition.entryPrice - currentPrice) / stats.openPosition.entryPrice * 100;
+        }
+      }
+
+      res.json({
         running: activeBots[symbol].isRunning(),
         uptime: activeBots[symbol].getUptime(),
-        stats: activeBots[symbol].getStats()
-      };
-      
-      res.json(botStatus);
+        stats
+      });
     } catch (error) {
       console.error(`Error getting status for bot ${symbol}:`, error);
       res.status(500).json({ 
-        error: `Failed to get bot status: ${error.message}`,
-        running: true, // Предполагаем, что бот работает, даже если не можем получить его статус
-        uptime: 0,
-        stats: {
-          activeStrategy: activeBots[symbol].activeStrategy || 'UNKNOWN'
-        }
+        running: false,
+        error: error.message
       });
     }
   } catch (error) {
@@ -253,11 +269,248 @@ exports.getBotStatus = async (req, res) => {
   }
 };
 
-    res.json({
-      running: activeBots[symbol].isRunning(),
-      uptime: activeBots[symbol].getUptime(),
-      stats: activeBots[symbol].getStats()
-    });
+// Исправления для остальных методов контроллера также должны иметь доступ к переменной activeBots
+// Добавьте ее в модуль exports, чтобы она была доступна для других методов
+exports.activeBots = activeBots;
+/**
+ * Сканирование всех доступных торговых пар для поиска сигналов
+ * @route GET /api/bot/scan-pairs
+ */
+exports.scanPairs = async (req, res) => {
+  try {
+    console.log('Запуск сканирования торговых пар...');
+    
+    // Создаем экземпляр API
+    const api = new BitgetAPI();
+    
+    // Получаем список всех доступных символов
+    const symbols = await api.getSymbols();
+    
+    if (!symbols || !symbols.data || !Array.isArray(symbols.data)) {
+      return res.status(500).json({ 
+        error: 'Не удалось получить список символов' 
+      });
+    }
+    
+    console.log(`Получено ${symbols.data.length} символов`);
+    
+    // Фильтруем только USDT-фьючерсы и извлекаем символы
+    const futuresSymbols = symbols.data
+      .filter(item => item && item.symbol && item.symbol.endsWith('USDT'))
+      .map(item => item.symbol);
+    
+    console.log(`Отфильтровано ${futuresSymbols.length} USDT фьючерсов`);
+    
+    // Создаем массив для хранения результатов анализа пар
+    const results = [];
+    
+    // Определяем максимальное количество пар для анализа
+    // (ограничиваем для производительности)
+    const maxPairsToAnalyze = Math.min(30, futuresSymbols.length);
+    
+    // Перемешиваем массив символов для случайного порядка анализа
+    const shuffledSymbols = futuresSymbols
+      .sort(() => 0.5 - Math.random())
+      .slice(0, maxPairsToAnalyze);
+    
+    console.log(`Будет проанализировано ${shuffledSymbols.length} случайных пар`);
+    
+    // Получаем конфигурацию для анализатора
+    const defaultConfig = {
+      autoSwitching: {
+        volatilityThreshold: 1.5,
+        volumeThreshold: 2.0,
+        trendStrengthThreshold: 0.6
+      }
+    };
+    
+    // Анализируем каждый символ
+    for (const symbol of shuffledSymbols) {
+      try {
+        console.log(`Анализ пары ${symbol}...`);
+        
+        // Проверяем, есть ли сохраненная конфигурация для этой пары
+        let botConfig = await BotConfig.findOne({ symbol });
+        
+        if (!botConfig) {
+          botConfig = defaultConfig;
+        }
+        
+        // Создаем экземпляр анализатора рынка
+        const marketAnalyzer = new MarketAnalyzer(symbol, botConfig, api);
+        
+        // Проводим анализ рыночных условий
+        const analysis = await marketAnalyzer.analyzeMarketConditions();
+        
+        // Сохраняем результаты анализа
+        results.push({
+          symbol,
+          ...analysis
+        });
+        
+        console.log(`Анализ пары ${symbol} завершен, рекомендуемая стратегия: ${analysis.recommendedStrategy}`);
+      } catch (error) {
+        console.error(`Ошибка при анализе пары ${symbol}:`, error);
+        // Пропускаем эту пару и продолжаем
+      }
+    }
+    
+    // Сортируем результаты по уровню уверенности (по убыванию)
+    results.sort((a, b) => b.confidence - a.confidence);
+    
+    console.log(`Сканирование завершено, найдено ${results.length} сигналов`);
+    
+    res.json(results);
+  } catch (error) {
+    console.error('Ошибка сканирования пар:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+/**
+ * Получение статуса всех ботов
+ * Это обновление для существующего метода getBotStatus
+ */
+exports.getBotStatus = async (req, res) => {
+  try {
+    const { symbol } = req.query;
+    
+    if (!symbol) {
+      // Возвращаем статус всех ботов
+      const statuses = {};
+      for (const [sym, bot] of Object.entries(activeBots)) {
+        try {
+          // Получаем ticker для расчета текущего PnL
+          let currentPrice = null;
+          try {
+            const ticker = await bot.api.getTicker(sym);
+            if (ticker && ticker.data && ticker.data[0]) {
+              currentPrice = parseFloat(ticker.data[0].last);
+            }
+          } catch (tickerError) {
+            console.warn(`Failed to get current price for ${sym}:`, tickerError.message);
+          }
+          
+          // Получаем статистику бота
+          const stats = bot.getStats();
+          
+          // Если есть открытая позиция и текущая цена, рассчитываем PnL
+          if (stats.openPosition && currentPrice) {
+            stats.openPosition.currentPrice = currentPrice;
+            
+            // Расчет PnL для открытой позиции
+            if (stats.openPosition.direction === 'LONG') {
+              stats.openPosition.pnl = (currentPrice - stats.openPosition.entryPrice) / stats.openPosition.entryPrice * 100;
+            } else { // SHORT
+              stats.openPosition.pnl = (stats.openPosition.entryPrice - currentPrice) / stats.openPosition.entryPrice * 100;
+            }
+          }
+          
+          // Добавляем текущую конфигурацию бота в ответ
+          statuses[sym] = {
+            running: bot.isRunning(),
+            uptime: bot.getUptime(),
+            stats,
+            // Включаем конфигурацию бота
+            config: bot.config
+          };
+        } catch (botError) {
+          console.error(`Error getting status for bot ${sym}:`, botError);
+          statuses[sym] = {
+            running: false,
+            error: botError.message
+          };
+        }
+      }
+      return res.json(statuses);
+    }
+
+    // Если символ указан, возвращаем статус только этого бота
+    if (!activeBots[symbol]) {
+      // Пытаемся получить сохраненную конфигурацию из базы данных
+      let savedConfig = null;
+      try {
+        const botConfig = await BotConfig.findOne({ symbol });
+        if (botConfig) {
+          savedConfig = botConfig.config;
+        }
+      } catch (dbError) {
+        console.warn(`Error getting saved config for ${symbol}:`, dbError.message);
+      }
+      
+      return res.json({ 
+        running: false,
+        stats: {
+          totalTrades: 0,
+          winTrades: 0,
+          lossTrades: 0,
+          totalPnl: 0,
+          maxDrawdown: 0,
+          currentBalance: 100,
+          initialBalance: 100,
+          tradesToday: 0,
+          hourlyTrades: Array(24).fill(0),
+          hourlyPnl: Array(24).fill(0),
+          strategyPerformance: {
+            DCA: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 },
+            SCALPING: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 }
+          },
+          lastMarketAnalysis: {
+            timestamp: Date.now(),
+            recommendedStrategy: 'DCA',
+            marketType: 'UNKNOWN',
+            volatility: 0,
+            volumeRatio: 0,
+            trendStrength: 0,
+            confidence: 0.5
+          },
+          activeStrategy: 'DCA'
+        },
+        // Включаем сохраненную конфигурацию, если есть
+        config: savedConfig
+      });
+    }
+
+    try {
+      // Получаем ticker для расчета текущего PnL
+      let currentPrice = null;
+      try {
+        const ticker = await activeBots[symbol].api.getTicker(symbol);
+        if (ticker && ticker.data && ticker.data[0]) {
+          currentPrice = parseFloat(ticker.data[0].last);
+        }
+      } catch (tickerError) {
+        console.warn(`Failed to get current price for ${symbol}:`, tickerError.message);
+      }
+      
+      // Получаем статистику бота
+      const stats = activeBots[symbol].getStats();
+      
+      // Если есть открытая позиция и текущая цена, рассчитываем PnL
+      if (stats.openPosition && currentPrice) {
+        stats.openPosition.currentPrice = currentPrice;
+        
+        // Расчет PnL для открытой позиции
+        if (stats.openPosition.direction === 'LONG') {
+          stats.openPosition.pnl = (currentPrice - stats.openPosition.entryPrice) / stats.openPosition.entryPrice * 100;
+        } else { // SHORT
+          stats.openPosition.pnl = (stats.openPosition.entryPrice - currentPrice) / stats.openPosition.entryPrice * 100;
+        }
+      }
+
+      res.json({
+        running: activeBots[symbol].isRunning(),
+        uptime: activeBots[symbol].getUptime(),
+        stats,
+        // Включаем конфигурацию бота
+        config: activeBots[symbol].config
+      });
+    } catch (error) {
+      console.error(`Error getting status for bot ${symbol}:`, error);
+      res.status(500).json({ 
+        running: false,
+        error: error.message
+      });
+    }
   } catch (error) {
     console.error('Error getting bot status:', error);
     res.status(500).json({ error: error.message });
