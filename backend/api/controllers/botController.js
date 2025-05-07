@@ -430,17 +430,19 @@ exports.setStrategy = async (req, res) => {
   }
 };
 
-// Улучшенный метод анализа рынка
-// Улучшенный метод анализа рынка
+/// Исправленная версия метода analyzeMarket в botController.js с поддержкой generateTradingSignals
 exports.analyzeMarket = async (req, res) => {
   try {
-    const { symbol } = req.query;
+    const { symbol, limit } = req.query;
     
     if (!symbol) {
       return res.status(400).json({ error: 'Symbol is required' });
     }
 
-    console.log(`Market analysis requested for symbol: ${symbol}`);
+    // Ограничение запроса (по умолчанию 100)
+    const requestLimit = limit ? parseInt(limit) : 100;
+
+    console.log(`Market analysis requested for symbol: ${symbol}, limit: ${requestLimit}`);
 
     // Настройки для анализатора рынка
     let config = {
@@ -480,7 +482,18 @@ exports.analyzeMarket = async (req, res) => {
         confidence: 0.5
       },
       timeframe: '1h',
-      symbol
+      symbol,
+      signals: {
+        action: 'HOLD',
+        confidence: 0.5,
+        entryPrice: 0,
+        stopLoss: 0,
+        takeProfit: 0,
+        reason: 'Using synthetic data',
+        timestamp: Date.now(),
+        timeframe: '1h',
+        synthetic: true
+      }
     };
 
     try {
@@ -509,7 +522,40 @@ exports.analyzeMarket = async (req, res) => {
             console.error(`Error in analyzeMarketConditions for ${symbol}:`, err);
             reject(err);
           } else {
-            resolve(analysis);
+            // Проверяем, есть ли метод generateTradingSignals в анализаторе
+            if (typeof marketAnalyzer.generateTradingSignals === 'function') {
+              // Генерируем торговые сигналы
+              marketAnalyzer.generateTradingSignals('1h', (signalErr, signals) => {
+                if (signalErr) {
+                  console.error(`Error generating trading signals for ${symbol}:`, signalErr);
+                  // Добавляем базовый сигнал, чтобы не возвращать ошибку
+                  analysis.signals = {
+                    action: 'HOLD',
+                    confidence: 0.5,
+                    reason: `Error generating signals: ${signalErr.message}`,
+                    timestamp: Date.now(),
+                    timeframe: '1h',
+                    synthetic: true
+                  };
+                } else {
+                  // Добавляем сигналы к результату анализа
+                  analysis.signals = signals;
+                }
+                resolve(analysis);
+              });
+            } else {
+              // Если метод не найден, добавляем заглушку сигнала
+              console.warn(`generateTradingSignals method not found in MarketAnalyzer for ${symbol}`);
+              analysis.signals = {
+                action: 'HOLD',
+                confidence: 0.5,
+                reason: 'Signal generation not available',
+                timestamp: Date.now(),
+                timeframe: '1h',
+                synthetic: true
+              };
+              resolve(analysis);
+            }
           }
         });
       });
@@ -564,6 +610,8 @@ exports.analyzeMarket = async (req, res) => {
     });
   }
 };
+
+
 
 exports.scanPairs = async (req, res) => {
   try {

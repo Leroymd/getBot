@@ -1,4 +1,4 @@
-// backend/services/MarketAnalyzer.js - Исправленная версия
+// backend/services/MarketAnalyzer.js - Полностью исправленная версия
 
 class MarketAnalyzer {
   constructor(symbol, config, api) {
@@ -27,190 +27,15 @@ class MarketAnalyzer {
     
     console.log(`MarketAnalyzer created for ${symbol}`);
   }
-// Метод generateTradingSignals для добавления в класс MarketAnalyzer
 
-// Генерация торговых сигналов на основе анализа рынка
-generateTradingSignals(timeframe = '1h', callback) {
-  console.log(`Generating trading signals for ${this.symbol} on timeframe ${timeframe}`);
-  
-  // Получаем анализ рыночных условий
-  this.analyzeMarketConditions(timeframe, (analyzeErr, analysis) => {
-    if (analyzeErr) {
-      console.error(`Error analyzing market conditions for signals: ${analyzeErr.message}`);
-      return callback(null, {
-        action: 'HOLD',
-        confidence: 0.5,
-        entryPrice: 0,
-        stopLoss: 0,
-        takeProfit: 0,
-        reason: 'Error analyzing market conditions',
-        timestamp: Date.now(),
-        timeframe,
-        synthetic: true
-      });
-    }
-    
-    try {
-      // Функция для создания синтетических сигналов
-      const createBaseSignal = () => ({
-        action: 'HOLD',
-        confidence: 0.5,
-        entryPrice: 0,
-        stopLoss: 0,
-        takeProfit: 0,
-        reason: 'Insufficient data for signal generation',
-        timestamp: Date.now(),
-        timeframe,
-        synthetic: true
-      });
-      
-      // Если это синтетические данные анализа, возвращаем базовый сигнал
-      if (analysis.synthetic) {
-        console.log(`Using synthetic analysis data for signals on ${this.symbol}`);
-        return callback(null, createBaseSignal());
-      }
-      
-      // Получаем данные исторических цен
-      const { hourlyPrices } = this.historicalData;
-      
-      // Проверяем наличие исторических данных
-      if (!hourlyPrices || hourlyPrices.length < 10) {
-        console.warn(`Insufficient historical data for signal generation on ${this.symbol}`);
-        return callback(null, createBaseSignal());
-      }
-      
-      // Получаем последнюю цену закрытия
-      const lastPrice = hourlyPrices[hourlyPrices.length - 1].close;
-      
-      // Анализируем индикаторы
-      const { 
-        marketType, 
-        volatility, 
-        trendStrength, 
-        indicators, 
-        priceAction,
-        supportLevel,
-        resistanceLevel
-      } = analysis;
-      
-      // Значения индикаторов
-      const { rsi, macd, bollingerWidth } = indicators;
-      
-      // Определяем торговый сигнал на основе анализа
-      let action = 'HOLD';
-      let confidence = 0.5;
-      let reason = 'Market conditions are neutral';
-      
-      // Логика определения сигнала в зависимости от индикаторов и типа рынка
-      if (marketType === 'TRENDING') {
-        if (trendStrength > 0.7) {
-          if (macd === 'BUY' || macd === 'BULLISH') {
-            action = 'BUY';
-            confidence = Math.min(0.8, 0.5 + trendStrength * 0.5);
-            reason = `Strong bullish trend detected (trend strength: ${trendStrength.toFixed(2)})`;
-          } else if (macd === 'SELL' || macd === 'BEARISH') {
-            action = 'SELL';
-            confidence = Math.min(0.8, 0.5 + trendStrength * 0.5);
-            reason = `Strong bearish trend detected (trend strength: ${trendStrength.toFixed(2)})`;
-          }
-        }
-      } else if (marketType === 'RANGING') {
-        // В боковике ищем перепроданность/перекупленность
-        if (rsi < 30) {
-          action = 'BUY';
-          confidence = Math.min(0.7, 0.5 + (30 - rsi) / 30);
-          reason = `Oversold conditions in ranging market (RSI: ${rsi.toFixed(2)})`;
-        } else if (rsi > 70) {
-          action = 'SELL';
-          confidence = Math.min(0.7, 0.5 + (rsi - 70) / 30);
-          reason = `Overbought conditions in ranging market (RSI: ${rsi.toFixed(2)})`;
-        }
-      } else if (marketType === 'VOLATILE') {
-        // В волатильном рынке используем уровни поддержки и сопротивления
-        if (lastPrice < supportLevel * 1.01 && rsi < 40) {
-          action = 'BUY';
-          confidence = 0.6;
-          reason = `Price near support level in volatile market (Price: ${lastPrice.toFixed(2)}, Support: ${supportLevel.toFixed(2)})`;
-        } else if (lastPrice > resistanceLevel * 0.99 && rsi > 60) {
-          action = 'SELL';
-          confidence = 0.6;
-          reason = `Price near resistance level in volatile market (Price: ${lastPrice.toFixed(2)}, Resistance: ${resistanceLevel.toFixed(2)})`;
-        }
-      }
-      
-      // Учитываем паттерны ценового действия
-      if (priceAction.pattern === 'DOUBLE_BOTTOM' && priceAction.strength > 0.7) {
-        action = 'BUY';
-        confidence = Math.max(confidence, priceAction.strength);
-        reason = `Double bottom pattern detected with strength ${priceAction.strength.toFixed(2)}`;
-      } else if (priceAction.pattern === 'DOUBLE_TOP' && priceAction.strength > 0.7) {
-        action = 'SELL';
-        confidence = Math.max(confidence, priceAction.strength);
-        reason = `Double top pattern detected with strength ${priceAction.strength.toFixed(2)}`;
-      }
-      
-      // Расчет уровней стоп-лосс и тейк-профит
-      let stopLoss = 0;
-      let takeProfit = 0;
-      
-      if (action === 'BUY') {
-        // Для покупки: стоп-лосс ниже текущей цены, тейк-профит выше
-        const stopDistance = Math.max(lastPrice * volatility / 100, (lastPrice - supportLevel) * 1.1);
-        stopLoss = Math.max(lastPrice - stopDistance, lastPrice * 0.95);
-        
-        // Тейк-профит: расстояние в зависимости от волатильности и с учетом уровня сопротивления
-        const tpDistance = stopDistance * 1.5; // Соотношение риск/доходность 1:1.5
-        takeProfit = resistanceLevel > lastPrice ? 
-          Math.min(lastPrice + tpDistance, resistanceLevel * 0.99) : 
-          lastPrice + tpDistance;
-      } else if (action === 'SELL') {
-        // Для продажи: стоп-лосс выше текущей цены, тейк-профит ниже
-        const stopDistance = Math.max(lastPrice * volatility / 100, (resistanceLevel - lastPrice) * 1.1);
-        stopLoss = Math.min(lastPrice + stopDistance, lastPrice * 1.05);
-        
-        // Тейк-профит: расстояние в зависимости от волатильности и с учетом уровня поддержки
-        const tpDistance = stopDistance * 1.5; // Соотношение риск/доходность 1:1.5
-        takeProfit = supportLevel < lastPrice ? 
-          Math.max(lastPrice - tpDistance, supportLevel * 1.01) : 
-          lastPrice - tpDistance;
-      }
-      
-      // Ограничиваем уверенность
-      if (confidence < 0.5) confidence = 0.5;
-      if (confidence > 0.9) confidence = 0.9;
-      
-      // Формируем результат
-      const signal = {
-        action,
-        confidence,
-        entryPrice: lastPrice,
-        stopLoss,
-        takeProfit,
-        reason,
-        timestamp: Date.now(),
-        timeframe,
-        analysis // Включаем полный анализ для справки
-      };
-      
-      callback(null, signal);
-    } catch (signalErr) {
-      console.error(`Error generating trading signals for ${this.symbol}:`, signalErr);
-      callback(null, {
-        action: 'HOLD',
-        confidence: 0.5,
-        entryPrice: 0,
-        stopLoss: 0,
-        takeProfit: 0,
-        reason: `Error generating signals: ${signalErr.message}`,
-        timestamp: Date.now(),
-        timeframe,
-        synthetic: true
-      });
-    }
-  });
-}
   // Обновление исторических данных с поддержкой callback и устойчивостью к ошибкам
   updateHistoricalData(timeframe = '1h', callback) {
+    // Проверяем, что callback - это функция
+    if (typeof callback !== 'function') {
+      console.error(`Invalid callback provided to updateHistoricalData for ${this.symbol}`);
+      return;
+    }
+    
     // Получаем данные только если с последнего обновления прошло достаточно времени
     const now = Date.now();
     if (now - this.historicalData.timestamp < 5 * 60 * 1000 && 
@@ -387,6 +212,12 @@ generateTradingSignals(timeframe = '1h', callback) {
 
   // Анализ рыночных условий для выбора стратегии с поддержкой callback и устойчивостью к ошибкам
   analyzeMarketConditions(timeframe = '1h', callback) {
+    // Проверяем, что callback - это функция
+    if (typeof callback !== 'function') {
+      console.error(`Invalid callback provided to analyzeMarketConditions for ${this.symbol}`);
+      return;
+    }
+    
     console.log(`Analyzing market conditions for ${this.symbol} on timeframe ${timeframe}`);
     
     // Функция для создания базового результата
@@ -423,6 +254,11 @@ generateTradingSignals(timeframe = '1h', callback) {
     this.updateHistoricalData(timeframe, (err, data) => {
       if (err) {
         console.error(`Error updating historical data for ${this.symbol}:`, err);
+        return callback(null, createBaseResult());
+      }
+      
+      if (!data) {
+        console.warn(`No historical data returned for ${this.symbol}`);
         return callback(null, createBaseResult());
       }
       
@@ -643,13 +479,201 @@ generateTradingSignals(timeframe = '1h', callback) {
           resistanceLevel: resistance,
           volumeProfile,
           marketCycle,
-          timeframe
+          timeframe,
+          lastPrice
         };
         
         callback(null, result);
       } catch (analysisErr) {
         console.error(`Error analyzing market conditions for ${this.symbol}:`, analysisErr);
         callback(null, createBaseResult());
+      }
+    });
+  }
+
+  // Генерация торговых сигналов на основе анализа рынка
+  generateTradingSignals(timeframe = '1h', callback) {
+    // Проверяем, что callback - это функция
+    if (typeof callback !== 'function') {
+      console.error(`Invalid callback provided to generateTradingSignals for ${this.symbol}`);
+      return;
+    }
+    
+    console.log(`Generating trading signals for ${this.symbol} on timeframe ${timeframe}`);
+    
+    // Получаем анализ рыночных условий
+    this.analyzeMarketConditions(timeframe, (analyzeErr, analysis) => {
+      if (analyzeErr) {
+        console.error(`Error analyzing market conditions for signals: ${analyzeErr.message}`);
+        return callback(null, {
+          action: 'HOLD',
+          confidence: 0.5,
+          entryPrice: 0,
+          stopLoss: 0,
+          takeProfit: 0,
+          reason: 'Error analyzing market conditions',
+          timestamp: Date.now(),
+          timeframe,
+          synthetic: true
+        });
+      }
+      
+      try {
+        // Функция для создания синтетических сигналов
+        const createBaseSignal = () => ({
+          action: 'HOLD',
+          confidence: 0.5,
+          entryPrice: 0,
+          stopLoss: 0,
+          takeProfit: 0,
+          reason: 'Insufficient data for signal generation',
+          timestamp: Date.now(),
+          timeframe,
+          synthetic: true
+        });
+        
+        // Если это синтетические данные анализа, возвращаем базовый сигнал
+        if (analysis.synthetic) {
+          console.log(`Using synthetic analysis data for signals on ${this.symbol}`);
+          return callback(null, createBaseSignal());
+        }
+        
+        // Получаем данные исторических цен
+        const { hourlyPrices } = this.historicalData;
+        
+        // Проверяем наличие исторических данных
+        if (!hourlyPrices || hourlyPrices.length < 10) {
+          console.warn(`Insufficient historical data for signal generation on ${this.symbol}`);
+          return callback(null, createBaseSignal());
+        }
+        
+        // Получаем последнюю цену закрытия
+        const lastPrice = hourlyPrices[hourlyPrices.length - 1].close;
+        
+        // Анализируем индикаторы
+        const { 
+          marketType, 
+          volatility, 
+          trendStrength, 
+          indicators, 
+          priceAction,
+          supportLevel,
+          resistanceLevel
+        } = analysis;
+        
+        // Значения индикаторов
+        const { rsi, macd, bollingerWidth } = indicators;
+        
+        // Определяем торговый сигнал на основе анализа
+        let action = 'HOLD';
+        let confidence = 0.5;
+        let reason = 'Market conditions are neutral';
+        
+        // Логика определения сигнала в зависимости от индикаторов и типа рынка
+        if (marketType === 'TRENDING') {
+          if (trendStrength > 0.7) {
+            if (macd === 'BUY' || macd === 'BULLISH') {
+              action = 'BUY';
+              confidence = Math.min(0.8, 0.5 + trendStrength * 0.5);
+              reason = `Strong bullish trend detected (trend strength: ${trendStrength.toFixed(2)})`;
+            } else if (macd === 'SELL' || macd === 'BEARISH') {
+              action = 'SELL';
+              confidence = Math.min(0.8, 0.5 + trendStrength * 0.5);
+              reason = `Strong bearish trend detected (trend strength: ${trendStrength.toFixed(2)})`;
+            }
+          }
+        } else if (marketType === 'RANGING') {
+          // В боковике ищем перепроданность/перекупленность
+          if (rsi < 30) {
+            action = 'BUY';
+            confidence = Math.min(0.7, 0.5 + (30 - rsi) / 30);
+            reason = `Oversold conditions in ranging market (RSI: ${rsi.toFixed(2)})`;
+          } else if (rsi > 70) {
+            action = 'SELL';
+            confidence = Math.min(0.7, 0.5 + (rsi - 70) / 30);
+            reason = `Overbought conditions in ranging market (RSI: ${rsi.toFixed(2)})`;
+          }
+        } else if (marketType === 'VOLATILE') {
+          // В волатильном рынке используем уровни поддержки и сопротивления
+          if (lastPrice < supportLevel * 1.01 && rsi < 40) {
+            action = 'BUY';
+            confidence = 0.6;
+            reason = `Price near support level in volatile market (Price: ${lastPrice.toFixed(2)}, Support: ${supportLevel.toFixed(2)})`;
+          } else if (lastPrice > resistanceLevel * 0.99 && rsi > 60) {
+            action = 'SELL';
+            confidence = 0.6;
+            reason = `Price near resistance level in volatile market (Price: ${lastPrice.toFixed(2)}, Resistance: ${resistanceLevel.toFixed(2)})`;
+          }
+        }
+        
+        // Учитываем паттерны ценового действия
+        if (priceAction.pattern === 'DOUBLE_BOTTOM' && priceAction.strength > 0.7) {
+          action = 'BUY';
+          confidence = Math.max(confidence, priceAction.strength);
+          reason = `Double bottom pattern detected with strength ${priceAction.strength.toFixed(2)}`;
+        } else if (priceAction.pattern === 'DOUBLE_TOP' && priceAction.strength > 0.7) {
+          action = 'SELL';
+          confidence = Math.max(confidence, priceAction.strength);
+          reason = `Double top pattern detected with strength ${priceAction.strength.toFixed(2)}`;
+        }
+        
+        // Расчет уровней стоп-лосс и тейк-профит
+        let stopLoss = 0;
+        let takeProfit = 0;
+        
+        if (action === 'BUY') {
+          // Для покупки: стоп-лосс ниже текущей цены, тейк-профит выше
+          const stopDistance = Math.max(lastPrice * volatility / 100, (lastPrice - supportLevel) * 1.1);
+          stopLoss = Math.max(lastPrice - stopDistance, lastPrice * 0.95);
+          
+          // Тейк-профит: расстояние в зависимости от волатильности и с учетом уровня сопротивления
+          const tpDistance = stopDistance * 1.5; // Соотношение риск/доходность 1:1.5
+          takeProfit = resistanceLevel > lastPrice ? 
+            Math.min(lastPrice + tpDistance, resistanceLevel * 0.99) : 
+            lastPrice + tpDistance;
+        } else if (action === 'SELL') {
+          // Для продажи: стоп-лосс выше текущей цены, тейк-профит ниже
+          const stopDistance = Math.max(lastPrice * volatility / 100, (resistanceLevel - lastPrice) * 1.1);
+          stopLoss = Math.min(lastPrice + stopDistance, lastPrice * 1.05);
+          
+          // Тейк-профит: расстояние в зависимости от волатильности и с учетом уровня поддержки
+          const tpDistance = stopDistance * 1.5; // Соотношение риск/доходность 1:1.5
+          takeProfit = supportLevel < lastPrice ? 
+            Math.max(lastPrice - tpDistance, supportLevel * 1.01) : 
+            lastPrice - tpDistance;
+        }
+        
+        // Ограничиваем уверенность
+        if (confidence < 0.5) confidence = 0.5;
+        if (confidence > 0.9) confidence = 0.9;
+        
+        // Формируем результат
+        const signal = {
+          action,
+          confidence,
+          entryPrice: lastPrice,
+          stopLoss,
+          takeProfit,
+          reason,
+          timestamp: Date.now(),
+          timeframe,
+          analysis // Включаем полный анализ для справки
+        };
+        
+        callback(null, signal);
+      } catch (signalErr) {
+        console.error(`Error generating trading signals for ${this.symbol}:`, signalErr);
+        callback(null, {
+          action: 'HOLD',
+          confidence: 0.5,
+          entryPrice: 0,
+          stopLoss: 0,
+          takeProfit: 0,
+          reason: `Error generating signals: ${signalErr.message}`,
+          timestamp: Date.now(),
+          timeframe,
+          synthetic: true
+        });
       }
     });
   }
