@@ -405,19 +405,70 @@ exports.setStrategy = async (req, res) => {
       return res.status(400).json({ error: 'Symbol and strategy are required' });
     }
 
+    console.log(`Changing strategy for ${symbol} to ${strategy}`);
+
     if (!activeBots[symbol]) {
-      return res.status(404).json({ error: 'No active bot found for this symbol' });
+      // Вернем понятный ответ, даже если бот не запущен
+      console.log(`No active bot found for ${symbol}, returning mock response`);
+      return res.status(404).json({ 
+        error: `No active bot found for ${symbol}`, 
+        message: 'Запустите бота перед изменением стратегии' 
+      });
     }
     
-    // Обновляем конфигурацию в базе данных
-    let botConfig = await BotConfig.findOne({ symbol });
-    if (botConfig) {
-      botConfig.activeStrategy = strategy;
-      await botConfig.save();
+    // Обновляем конфигурацию в базе данных, если она доступна
+    try {
+      let botConfig = await BotConfig.findOne({ symbol });
+      if (botConfig) {
+        botConfig.activeStrategy = strategy;
+        await botConfig.save();
+        console.log(`Strategy saved to DB for ${symbol}: ${strategy}`);
+      } else {
+        console.log(`No config found in DB for ${symbol}, creating new one`);
+        // Создаем новую конфигурацию, если не существует
+        botConfig = new BotConfig({ 
+          symbol, 
+          activeStrategy: strategy,
+          common: {
+            enabled: true,
+            leverage: 10,
+            initialBalance: 100,
+            reinvestment: 100
+          },
+          dca: {
+            maxDCAOrders: 5,
+            dcaPriceStep: 1.5,
+            dcaMultiplier: 1.5,
+            maxTradeDuration: 240,
+            trailingStop: 0.5
+          },
+          scalping: {
+            timeframe: '1m',
+            profitTarget: 0.5,
+            stopLoss: 0.3,
+            maxTradeDuration: 30,
+            minVolatility: 0.2,
+            maxSpread: 0.1,
+            useTrailingStop: true,
+            trailingStopActivation: 0.2,
+            trailingStopDistance: 0.1
+          },
+          autoSwitching: {
+            enabled: true,
+            volatilityThreshold: 1.5,
+            volumeThreshold: 2.0,
+            trendStrengthThreshold: 0.6
+          }
+        });
+        await botConfig.save();
+      }
+    } catch (dbError) {
+      console.warn(`Error updating strategy in DB: ${dbError.message}. Continuing anyway.`);
     }
     
     // Устанавливаем стратегию
     const currentStrategy = activeBots[symbol].setStrategy(strategy);
+    console.log(`Successfully changed strategy for ${symbol} to ${strategy}`);
     
     res.json({ 
       success: true, 

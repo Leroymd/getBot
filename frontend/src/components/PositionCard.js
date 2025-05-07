@@ -1,7 +1,7 @@
 // frontend/src/components/PositionCard.js
 import React from 'react';
-import { Box, Paper, Typography, Grid, Chip } from '@mui/material';
-import { formatCurrency, formatPercentage } from '../utils/formatters';
+import { Paper, Typography, Grid, Chip } from '@mui/material';
+import { formatCurrency } from '../utils/formatters';
 
 const PositionCard = ({ position }) => {
   if (!position) return null;

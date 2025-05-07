@@ -1,5 +1,5 @@
 // frontend/src/pages/TradingView.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Typography from '@mui/material/Typography';
 import Box from '@mui/material/Box';
 import Grid from '@mui/material/Grid';
@@ -53,6 +53,19 @@ const TradingView = () => {
   const [botStatus, setBotStatus] = useState(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
 
+  // Получение статуса бота, обёрнутое в useCallback
+  const fetchBotStatus = useCallback(async () => {
+    try {
+      setLoadingStatus(true);
+      const response = await getBotStatus(selectedSymbol);
+      setBotStatus(response);
+    } catch (error) {
+      console.error('Error fetching bot status:', error);
+    } finally {
+      setLoadingStatus(false);
+    }
+  }, [selectedSymbol]);
+
   // Обновление выбранного символа при загрузке данных
   useEffect(() => {
     if (symbols && symbols.length > 0 && !selectedSymbol) {
@@ -65,7 +78,7 @@ const TradingView = () => {
     if (selectedSymbol) {
       fetchBotStatus();
     }
-  }, [selectedSymbol]);
+  }, [selectedSymbol, fetchBotStatus]);
 
   const handleSymbolChange = (event) => {
     setSelectedSymbol(event.target.value);
@@ -78,18 +91,6 @@ const TradingView = () => {
   const handleStrategyChange = () => {
     // Обновляем статус бота после изменения стратегии
     fetchBotStatus();
-  };
-
-  const fetchBotStatus = async () => {
-    try {
-      setLoadingStatus(true);
-      const response = await getBotStatus(selectedSymbol);
-      setBotStatus(response);
-    } catch (error) {
-      console.error('Error fetching bot status:', error);
-    } finally {
-      setLoadingStatus(false);
-    }
   };
 
   const handleStartBot = async () => {
@@ -132,12 +133,6 @@ const TradingView = () => {
   const formatPrice = (price) => {
     if (!price) return '0.00';
     return parseFloat(price).toFixed(2);
-  };
-
-  // Расчет изменения в процентах
-  const calculateChange = (last, open) => {
-    if (!last || !open) return 0;
-    return ((last - open) / open) * 100;
   };
 
   if (loadingSymbols) {

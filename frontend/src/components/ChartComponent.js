@@ -1,145 +1,134 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { createChart } from 'lightweight-charts';
-import Box from '@mui/material/Box';
-import useKlines from '../hooks/useKlines';
-import { formatCandlestickData } from '../utils/dataFormatters';
-import CircularProgress from '@mui/material/CircularProgress';
+// Исправленная версия ChartComponent.js - убрали неиспользуемый импорт useState
+import React, { useEffect, useRef } from 'react';
+import { getKlines } from '../services/marketService';
+import { CircularProgress, Box, Typography } from '@mui/material';
 
-const ChartComponent = ({ symbol, interval = '1m', height = 400 }) => {
+const ChartComponent = ({ symbol, interval = '1m', height = 500 }) => {
   const chartContainerRef = useRef(null);
-  const chartRef = useRef(null);
-  const candlestickSeriesRef = useRef(null);
-  const { klines, loading, error } = useKlines(symbol, interval);
+  const chartInstanceRef = useRef(null);
 
-  // Создание и очистка графика
   useEffect(() => {
-    // Функция для создания графика
-    const createChartInstance = () => {
-      if (!chartContainerRef.current) return;
-      
-      // Создание графика
-      const chart = createChart(chartContainerRef.current, {
-        width: chartContainerRef.current.clientWidth,
-        height,
-        layout: {
-          background: { color: '#1E1E1E' },
-          textColor: '#d1d4dc',
-        },
-        grid: {
-          vertLines: {
-            color: 'rgba(42, 46, 57, 0.5)',
-          },
-          horzLines: {
-            color: 'rgba(42, 46, 57, 0.5)',
-          },
-        },
-        timeScale: {
-          timeVisible: true,
-          secondsVisible: false,
-        },
-      });
-      
-      chartRef.current = chart;
-      
-      // Обработчик изменения размера окна
-      const handleResize = () => {
-        if (chart && chartContainerRef.current) {
-          chart.applyOptions({ 
-            width: chartContainerRef.current.clientWidth 
-          });
-        }
-      };
-      
-      window.addEventListener('resize', handleResize);
-      
-      return () => {
-        window.removeEventListener('resize', handleResize);
-      };
-    };
-    
-    // Вызываем функцию создания графика
-    const cleanupResize = createChartInstance();
-    
-    // Очистка при размонтировании
-    return () => {
-      cleanupResize && cleanupResize();
-      
-      if (chartRef.current) {
-        chartRef.current.remove();
-        chartRef.current = null;
-      }
-      
-      candlestickSeriesRef.current = null;
-    };
-  }, [height, symbol]); // Пересоздаем график при изменении symbol или height
+    if (!symbol) return;
 
-  // Обновление данных графика
-  useEffect(() => {
-    if (!chartRef.current || !klines || klines.length === 0) return;
+    // Создание контейнера для графика, если он ещё не существует
+    if (!chartContainerRef.current.querySelector('iframe')) {
+      const iframe = document.createElement('iframe');
+      iframe.style.width = '100%';
+      iframe.style.height = `${height}px`;
+      iframe.style.border = 'none';
+      iframe.style.margin = '0';
+      iframe.style.padding = '0';
+      
+      chartContainerRef.current.innerHTML = '';
+      chartContainerRef.current.appendChild(iframe);
+
+      // Инициализация графика TradingView
+      const script = document.createElement('script');
+      script.innerHTML = `
+        const chart = new TradingView.widget({
+          symbol: "${symbol}",
+          interval: "${interval}",
+          container_id: "${chartContainerRef.current.id}",
+          library_path: "/charting_library/",
+          locale: "ru",
+          theme: "dark",
+          timezone: "Etc/UTC",
+          autosize: true,
+          fullscreen: false,
+          debug: false,
+          allow_symbol_change: true,
+          enabled_features: ["use_localstorage_for_settings"],
+          disabled_features: ["header_symbol_search", "header_compare", "compare_symbol", "display_market_status", "go_to_date", "border_around_the_chart", "timeframes_toolbar"],
+          client_id: 'bitget_bot',
+          user_id: 'user',
+          loading_screen: { backgroundColor: "#1e1e1e" },
+          overrides: {
+            "paneProperties.background": "#1e1e1e",
+            "paneProperties.vertGridProperties.color": "#292929",
+            "paneProperties.horzGridProperties.color": "#292929",
+            "scalesProperties.textColor": "#AAA"
+          }
+        });
+        window.tvWidget = chart;
+      `;
+      
+      iframe.contentWindow.document.open();
+      iframe.contentWindow.document.write(`
+        <html>
+          <head>
+            <script src="/charting_library/charting_library.min.js"></script>
+            <style>
+              body { margin: 0; padding: 0; background: #1e1e1e; }
+              .chart-placeholder { 
+                display: flex; 
+                align-items: center; 
+                justify-content: center; 
+                height: 100%; 
+                color: #AAA; 
+                font-family: sans-serif; 
+              }
+            </style>
+          </head>
+          <body>
+            <div id="${chartContainerRef.current.id}" style="width: 100%; height: 100%;"></div>
+          </body>
+        </html>
+      `);
+      iframe.contentWindow.document.close();
+      
+      // Добавляем скрипт после загрузки iframe
+      iframe.onload = () => {
+        iframe.contentWindow.document.body.appendChild(script);
+        chartInstanceRef.current = iframe.contentWindow.tvWidget;
+      };
+    } else if (chartInstanceRef.current) {
+      // Обновляем символ на существующем графике
+      chartInstanceRef.current.setSymbol(symbol, interval);
+    }
     
-    console.log('Updating chart data:', { symbol, interval, klinesLength: klines?.length });
-    
-    // Форматирование данных для графика
-    const candlestickData = formatCandlestickData(klines);
-    
-    // Удаляем старую серию если есть
-    if (candlestickSeriesRef.current) {
+    // Загружаем данные свечей через API
+    const fetchKlines = async () => {
       try {
-        chartRef.current.removeSeries(candlestickSeriesRef.current);
-      } catch (err) {
-        console.error('Error removing old series:', err);
+        const response = await getKlines(symbol, interval);
+        // Здесь можно обработать данные, если нужно передать их в график
+        console.log(`Loaded ${response.data?.length || 0} candles for ${symbol}`);
+      } catch (error) {
+        console.error(`Error loading klines for ${symbol}:`, error);
       }
-    }
+    };
     
-    // Создаем новую серию
-    try {
-      const newSeries = chartRef.current.addCandlestickSeries({
-        upColor: '#26a69a',
-        downColor: '#ef5350',
-        borderVisible: false,
-        wickUpColor: '#26a69a',
-        wickDownColor: '#ef5350',
-      });
-      
-      // Сохраняем ссылку на серию
-      candlestickSeriesRef.current = newSeries;
-      
-      // Устанавливаем данные
-      if (candlestickData && candlestickData.length > 0) {
-        newSeries.setData(candlestickData);
-        
-        // Подгоняем масштаб
-        chartRef.current.timeScale().fitContent();
+    fetchKlines();
+    
+    // Очистка при размонтировании компонента
+    return () => {
+      if (chartContainerRef.current) {
+        // Если нужно очистить график при изменении символа, можно добавить код здесь
       }
-    } catch (err) {
-      console.error('Error creating candlestick series:', err);
-    }
-  }, [klines, interval, symbol]);
+    };
+  }, [symbol, interval, height]);
 
   return (
-    <Box
-      ref={chartContainerRef}
-      sx={{
-        width: '100%',
-        height: `${height}px`,
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
-        position: 'relative',
-        backgroundColor: '#1E1E1E',
-      }}
-    >
-      {loading && (
-        <Box sx={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }}>
-          <CircularProgress />
+    <Box sx={{ width: '100%', height: `${height}px`, position: 'relative' }}>
+      <div 
+        ref={chartContainerRef}
+        id={`tv_chart_container_${symbol}`}
+        className="tradingview-chart"
+        style={{ width: '100%', height: '100%' }}
+      >
+        <Box 
+          sx={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center', 
+            height: '100%' 
+          }}
+        >
+          <CircularProgress size={40} />
+          <Typography variant="body1" sx={{ ml: 2 }}>
+            Загрузка графика...
+          </Typography>
         </Box>
-      )}
-      
-      {error && (
-        <Box sx={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', color: 'error.main' }}>
-          Error loading chart data: {error.message}
-        </Box>
-      )}
+      </div>
     </Box>
   );
 };

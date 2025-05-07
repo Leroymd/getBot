@@ -41,12 +41,12 @@ class PairScanner {
     // Получаем все символы с биржи
     this.api.getSymbols((err, symbolsResponse) => {
       if (err) {
-        this.isScanning = false;
+        this.isScanning = false; // Сбрасываем флаг при ошибке
         return callback(new Error('Failed to fetch symbols from exchange: ' + err.message));
       }
       
       if (!symbolsResponse || !symbolsResponse.data || !Array.isArray(symbolsResponse.data)) {
-        this.isScanning = false;
+        this.isScanning = false; // Сбрасываем флаг при ошибке
         return callback(new Error('Invalid symbols response from exchange'));
       }
       
@@ -74,6 +74,7 @@ class PairScanner {
 
       // Процесс получения тикеров и анализа пар
       this._processPairsBatches(futuresSymbols, scanOptions, (processingErr, results) => {
+        // Всегда сбрасываем флаг по завершении, даже при ошибке
         this.isScanning = false;
         
         if (processingErr) {
@@ -110,7 +111,14 @@ class PairScanner {
     const processBatch = (startIdx) => {
       if (startIdx >= symbols.length) {
         // Все партии обработаны, переходим к фильтрации и анализу
-        this._filterAndAnalyzePairs(allTickerData, options, callback);
+        this._filterAndAnalyzePairs(allTickerData, options, (err, results) => {
+          // Убедимся, что флаг сканирования сбрасывается даже при ошибке анализа
+          if (err) {
+            this.isScanning = false;
+            return callback(err);
+          }
+          callback(null, results);
+        });
         return;
       }
       
@@ -166,6 +174,7 @@ class PairScanner {
         })
         .catch(error => {
           console.error('Error processing batch:', error);
+          this.isScanning = false; // Сбрасываем флаг при ошибке обработки партии
           callback(error);
         });
     };

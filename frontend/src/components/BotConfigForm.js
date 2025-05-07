@@ -1,7 +1,7 @@
 // frontend/src/components/BotConfigForm.js
 // Обновленный код для загрузки фактических настроек бота
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Box, 
   TextField, 
@@ -57,18 +57,10 @@ const BotConfigForm = ({ symbol, initialConfig, onSubmit }) => {
     }
   });
 
-  // Загрузка конфигурации при монтировании компонента
-  useEffect(() => {
-    if (symbol) {
-      fetchConfig();
-    }
-  }, [symbol]);
-
-  // Получение конфигурации бота
-  const fetchConfig = async () => {
+  // Получение конфигурации бота с обёрткой в useCallback
+  const fetchConfig = useCallback(async () => {
+    setLoading(true);
     try {
-      setLoading(true);
-      
       // Сначала проверяем, запущен ли бот, чтобы получить его текущие настройки
       const botStatus = await getBotStatus(symbol);
       let configData = null;
@@ -117,7 +109,14 @@ const BotConfigForm = ({ symbol, initialConfig, onSubmit }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [symbol, initialConfig]);
+
+  // Загрузка конфигурации при монтировании компонента
+  useEffect(() => {
+    if (symbol) {
+      fetchConfig();
+    }
+  }, [symbol, fetchConfig]);
 
   // Обработка изменения стратегии
   const handleStrategyChange = (event) => {

@@ -5,47 +5,25 @@ import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import TextField from '@mui/material/TextField';
 import Button from '@mui/material/Button';
+import FormControlLabel from '@mui/material/FormControlLabel';
+import Switch from '@mui/material/Switch';
 import Grid from '@mui/material/Grid';
+import Alert from '@mui/material/Alert';
+import Tabs from '@mui/material/Tabs';
+import Tab from '@mui/material/Tab';
 import FormControl from '@mui/material/FormControl';
 import InputLabel from '@mui/material/InputLabel';
 import Select from '@mui/material/Select';
 import MenuItem from '@mui/material/MenuItem';
 import Slider from '@mui/material/Slider';
-import FormControlLabel from '@mui/material/FormControlLabel';
-import Switch from '@mui/material/Switch';
-import Tabs from '@mui/material/Tabs';
-import Tab from '@mui/material/Tab';
-import Divider from '@mui/material/Divider';
-import Alert from '@mui/material/Alert';
 import useSymbols from '../hooks/useSymbols';
 import { getBotConfig, updateBotConfig } from '../services/botService';
 
-// Компонент для отображения панели настроек
-const TabPanel = (props) => {
-  const { children, value, index, ...other } = props;
-
-  return (
-    <div
-      role="tabpanel"
-      hidden={value !== index}
-      id={`strategy-tabpanel-${index}`}
-      aria-labelledby={`strategy-tab-${index}`}
-      {...other}
-    >
-      {value === index && (
-        <Box sx={{ p: 3 }}>
-          {children}
-        </Box>
-      )}
-    </div>
-  );
-};
-
 const BotConfig = () => {
+  const [tab, setTab] = useState(0);
+  const [savedAlert, setSaved] = useState(false);
   const { symbols, loading: loadingSymbols } = useSymbols();
   const [selectedSymbol, setSelectedSymbol] = useState('');
-  const [activeTab, setActiveTab] = useState(0);
-  const [savedAlert, setSavedAlert] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   
@@ -113,7 +91,7 @@ const BotConfig = () => {
 
   // Обработка изменения вкладки
   const handleTabChange = (event, newValue) => {
-    setActiveTab(newValue);
+    setTab(newValue);
   };
 
   // Обработка изменения выбранного символа
@@ -167,8 +145,8 @@ const BotConfig = () => {
     try {
       await updateBotConfig(selectedSymbol, config);
       console.log('Configuration saved:', config);
-      setSavedAlert(true);
-      setTimeout(() => setSavedAlert(false), 3000);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
     } catch (err) {
       console.error('Error saving config:', err);
       setError('Ошибка сохранения конфигурации: ' + (err.message || 'Неизвестная ошибка'));
@@ -212,6 +190,14 @@ const BotConfig = () => {
         trendStrengthThreshold: 0.6
       }
     });
+  };
+
+  const TabPanel = ({ children, value, index }) => {
+    return (
+      <div role="tabpanel" hidden={value !== index}>
+        {value === index && <Box sx={{ pt: 3 }}>{children}</Box>}
+      </div>
+    );
   };
 
   if (loadingSymbols) {
@@ -275,7 +261,7 @@ const BotConfig = () => {
             </Grid>
           </Grid>
           
-          <Tabs value={activeTab} onChange={handleTabChange} aria-label="strategy tabs">
+          <Tabs value={tab} onChange={handleTabChange} aria-label="strategy tabs">
             <Tab label="Общие настройки" />
             <Tab label="DCA Стратегия" />
             <Tab label="Скальпинг стратегия" />
@@ -283,7 +269,7 @@ const BotConfig = () => {
           </Tabs>
           
           {/* Общие настройки */}
-          <TabPanel value={activeTab} index={0}>
+          <TabPanel value={tab} index={0}>
             <Grid container spacing={3}>
               <Grid item xs={12}>
                 <Typography gutterBottom>
@@ -348,7 +334,7 @@ const BotConfig = () => {
           </TabPanel>
           
           {/* DCA Стратегия */}
-          <TabPanel value={activeTab} index={1}>
+          <TabPanel value={tab} index={1}>
             <Grid container spacing={3}>
               <Grid item xs={12}>
                 <Typography variant="h6" gutterBottom>
@@ -412,7 +398,7 @@ const BotConfig = () => {
           </TabPanel>
           
           {/* Скальпинг стратегия */}
-          <TabPanel value={activeTab} index={2}>
+          <TabPanel value={tab} index={2}>
             <Grid container spacing={3}>
               <Grid item xs={12}>
                 <Typography variant="h6" gutterBottom>
@@ -530,7 +516,7 @@ const BotConfig = () => {
           </TabPanel>
           
           {/* Настройки автопереключения */}
-          <TabPanel value={activeTab} index={3}>
+          <TabPanel value={tab} index={3}>
             <Grid container spacing={3}>
               <Grid item xs={12}>
                 <Typography variant="h6" gutterBottom>

@@ -1,5 +1,5 @@
 // frontend/src/components/MarketAnalyzer.js - Исправленная версия
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Box, 
   Paper, 
@@ -22,8 +22,8 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
   const [success, setSuccess] = useState(null);
   const [retryCount, setRetryCount] = useState(0);
 
-  // Получение анализа рынка с обработкой ошибок
-  const fetchAnalysis = async () => {
+  // Получение анализа рынка с обработкой ошибок, обёрнутое в useCallback
+  const fetchAnalysis = useCallback(async () => {
     if (!symbol) return;
     
     try {
@@ -108,14 +108,14 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [symbol, retryCount]);
 
   // Загрузка анализа при изменении символа
   useEffect(() => {
     if (symbol) {
       fetchAnalysis();
     }
-  }, [symbol]);
+  }, [symbol, fetchAnalysis]);
 
   // Изменение стратегии с обработкой ошибок
   const handleSetStrategy = async (strategy) => {
