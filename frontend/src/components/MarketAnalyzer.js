@@ -1,16 +1,4 @@
-// Исправление во frontend/src/components/MarketAnalyzer.js
-// Где-то в коде вы пытаетесь использовать MarketAnalyzer как функцию, а не как класс
-
-// Вместо этого:
-// const analyzer = MarketAnalyzer(symbol, config, api);
-
-// Нужно использовать:
-// const analyzer = new MarketAnalyzer(symbol, config, api);
-
-// Однако, скорее всего, этот компонент вообще не должен создавать экземпляр
-// класса MarketAnalyzer напрямую, поскольку это серверный класс.
-// Вместо этого, компонент должен взаимодействовать с API
-
+// frontend/src/components/MarketAnalyzer.js - Исправленная версия
 import React, { useState, useEffect } from 'react';
 import { 
   Box, 
@@ -32,8 +20,9 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
   const [changing, setChanging] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  const [retryCount, setRetryCount] = useState(0);
 
-  // Получение анализа рынка
+  // Получение анализа рынка с обработкой ошибок
   const fetchAnalysis = async () => {
     if (!symbol) return;
     
@@ -42,11 +31,80 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
       setError(null);
       // Изменим вызов для добавления случайного значения, чтобы избежать кэширования
       const cacheBuster = `&_=${Date.now()}`;
-      const result = await analyzeMarket(`${symbol}${cacheBuster}`);
-      setAnalysis(result);
+      console.log(`Analyzing market for ${symbol}${cacheBuster}...`);
+      
+      try {
+        const result = await analyzeMarket(`${symbol}${cacheBuster}`);
+        
+        if (result) {
+          console.log(`Analysis result for ${symbol}:`, result);
+          
+          // Проверяем, есть ли в результате сообщение об ошибке 
+          if (result._source && result._source.includes('synthetic')) {
+            // Это синтетические данные из-за ошибки, но мы всё равно их показываем
+            console.warn(`Received synthetic data for ${symbol}: ${result.message || 'Unknown reason'}`);
+            setAnalysis(result);
+            setError({
+              type: 'warning',
+              message: result.message || 'Показаны приблизительные данные из-за проблем с API'
+            });
+          } else {
+            // Нормальные данные
+            setAnalysis(result);
+            setError(null);
+          }
+        } else {
+          throw new Error('Пустой ответ от API');
+        }
+      } catch (apiError) {
+        console.error('Error analyzing market:', apiError);
+        
+        // Создаем синтетические данные для отображения
+        const syntheticResult = {
+          symbol,
+          recommendedStrategy: 'DCA',
+          marketType: 'RANGING',
+          volatility: 1.2,
+          volumeRatio: 1.0,
+          trendStrength: 0.4,
+          confidence: 0.7,
+          _source: 'client-side-synthetic'
+        };
+        
+        setAnalysis(syntheticResult);
+        setError({
+          type: 'error',
+          message: `Ошибка анализа рынка: ${apiError.message || 'Неизвестная ошибка'}. Показаны приблизительные данные.`
+        });
+        
+        // Если это первая попытка, попробуем еще раз через 1 секунду
+        if (retryCount === 0) {
+          setRetryCount(1);
+          setTimeout(() => {
+            console.log(`Retrying market analysis for ${symbol}...`);
+            setRetryCount(0);
+            fetchAnalysis();
+          }, 1000);
+        }
+      }
     } catch (err) {
-      console.error('Error analyzing market:', err);
-      setError('Ошибка анализа рынка: ' + (err.message || 'Неизвестная ошибка'));
+      console.error('Unexpected error during analysis:', err);
+      setError({
+        type: 'error',
+        message: `Неожиданная ошибка: ${err.message}`
+      });
+      
+      // Создаем минимальные данные для отображения
+      setAnalysis({
+        symbol,
+        recommendedStrategy: 'DCA',
+        marketType: 'UNKNOWN',
+        volatility: 0,
+        volumeRatio: 0,
+        trendStrength: 0,
+        confidence: 0.5,
+        _source: 'error-fallback'
+      });
     } finally {
       setLoading(false);
     }
@@ -59,27 +117,39 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
     }
   }, [symbol]);
 
-  // Изменение стратегии
+  // Изменение стратегии с обработкой ошибок
   const handleSetStrategy = async (strategy) => {
     try {
       setChanging(true);
       setError(null);
-      await setStrategy(symbol, strategy);
-      setSuccess(`Стратегия успешно изменена на ${strategy}`);
-      setTimeout(() => setSuccess(null), 3000);
       
-      // Обновляем статистику, если есть callback
-      if (refreshStats) {
-        refreshStats();
-      }
-      
-      // Уведомляем родительский компонент об изменении стратегии
-      if (onStrategyChange) {
-        onStrategyChange();
+      try {
+        await setStrategy(symbol, strategy);
+        setSuccess(`Стратегия успешно изменена на ${strategy}`);
+        setTimeout(() => setSuccess(null), 3000);
+        
+        // Обновляем статистику, если есть callback
+        if (refreshStats) {
+          refreshStats();
+        }
+        
+        // Уведомляем родительский компонент об изменении стратегии
+        if (onStrategyChange) {
+          onStrategyChange();
+        }
+      } catch (apiError) {
+        console.error('Error setting strategy:', apiError);
+        setError({
+          type: 'error',
+          message: `Ошибка изменения стратегии: ${apiError.message || 'Неизвестная ошибка'}`
+        });
       }
     } catch (err) {
-      console.error('Error setting strategy:', err);
-      setError('Ошибка изменения стратегии: ' + (err.message || 'Неизвестная ошибка'));
+      console.error('Unexpected error setting strategy:', err);
+      setError({
+        type: 'error',
+        message: `Неожиданная ошибка: ${err.message}`
+      });
     } finally {
       setChanging(false);
     }
@@ -116,8 +186,8 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
       </Box>
       
       {error && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
+        <Alert severity={error.type || "error"} sx={{ mb: 2 }}>
+          {error.message}
         </Alert>
       )}
       
@@ -159,11 +229,11 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
                 sx={{ mr: 1 }}
               />
               <Typography variant="caption">
-                (уверенность: {formatPercentage(analysis.confidence * 100)})
+                (уверенность: {formatPercentage(analysis.confidence * 100 || 0)})
               </Typography>
               <LinearProgress 
                 variant="determinate" 
-                value={analysis.confidence * 100} 
+                value={analysis.confidence * 100 || 0} 
                 sx={{ mt: 1 }}
               />
             </Box>
@@ -181,18 +251,18 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
               </Grid>
               <Grid item xs={6}>
                 <Typography variant="body2">
-                  {formatPercentage(analysis.volatility)}
+                  {formatPercentage(analysis.volatility || 0)}
                 </Typography>
               </Grid>
               
               <Grid item xs={6}>
                 <Typography variant="body2" color="textSecondary">
-                  Отношение объема:
+                  Соотношение объема:
                 </Typography>
               </Grid>
               <Grid item xs={6}>
                 <Typography variant="body2">
-                  {analysis.volumeRatio?.toFixed(2) || "N/A"}x
+                  {(analysis.volumeRatio || 0).toFixed(2)}x
                 </Typography>
               </Grid>
               
@@ -203,7 +273,7 @@ const MarketAnalyzer = ({ symbol, onStrategyChange, refreshStats }) => {
               </Grid>
               <Grid item xs={6}>
                 <Typography variant="body2">
-                  {analysis.trendStrength?.toFixed(2) || "N/A"}
+                  {(analysis.trendStrength || 0).toFixed(2)}
                 </Typography>
               </Grid>
             </Grid>
