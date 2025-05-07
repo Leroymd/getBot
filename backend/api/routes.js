@@ -1,4 +1,5 @@
 // backend/api/routes.js
+
 const express = require('express');
 const router = express.Router();
 const botController = require('./controllers/botController');
@@ -15,8 +16,20 @@ router.get('/bot/config', botController.getConfig);
 router.get('/bot/stats', botController.getStats);
 router.post('/bot/strategy', botController.setStrategy);
 router.get('/bot/market-analysis', botController.analyzeMarket);
-// Новый маршрут для сканирования пар
-router.get('/bot/scan-pairs', botController.scanPairs);
+
+// Маршруты для сканирования и анализа пар
+router.get('/market/scan-pairs', botController.scanPairs);
+router.get('/market/filter-pairs', botController.filterPairs);
+
+// Маршруты для анализа корреляций
+router.get('/market/correlations', botController.analyzeCorrelations);
+router.get('/market/correlation-matrix', botController.getCorrelationMatrix);
+router.get('/market/diversification-pairs', botController.findDiversificationPairs);
+
+// Маршруты для анализа ликвидаций
+router.get('/market/liquidations', botController.getLiquidations);
+router.get('/market/liquidation-analysis', botController.analyzeLiquidations);
+router.get('/market/reversal-points', botController.predictReversalPoints);
 
 // Маршруты для аккаунта
 router.get('/account/balance', accountController.getBalance);
