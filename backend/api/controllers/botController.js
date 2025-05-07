@@ -485,6 +485,8 @@ exports.analyzeMarket = async (req, res) => {
   }
 };
 
+// Исправленный метод scanPairs в botController.js с использованием async/await
+
 // Улучшенное сканирование пар
 exports.scanPairs = async (req, res) => {
   try {
@@ -498,14 +500,17 @@ exports.scanPairs = async (req, res) => {
     } = req.query;
     
     // Настраиваем параметры сканирования
-    const scanOptions = {};
+    const scanOptions = {
+      minVolume: minVolume ? parseFloat(minVolume) : 1000000,
+      maxPairs: maxPairs ? parseInt(maxPairs) : 50,
+      saveToDb: true
+    };
     
-    if (minVolume) scanOptions.minVolume = parseFloat(minVolume);
-    if (maxPairs) scanOptions.maxPairs = parseInt(maxPairs);
     if (filterByBase) {
       // Преобразуем строку с разделителями в массив
       scanOptions.filterByBase = filterByBase.split(',');
     }
+    
     if (timeframes) {
       scanOptions.timeframes = timeframes.split(',');
     }
@@ -523,61 +528,130 @@ exports.scanPairs = async (req, res) => {
         if (minVolume) filters.minVolume = parseFloat(minVolume);
         if (filterByBase) filters.baseCoin = filterByBase;
         
-        // Используем функцию как callback для получения результатов
-        pairScanner.getLastScanResults(filters, (err, cachedResults) => {
-          if (err) {
-            console.warn('Error retrieving cached scan results:', err.message);
-            // Продолжаем с полным сканированием
-            performFullScan();
-          } else if (cachedResults && cachedResults.results.length > 0 && 
-              cachedResults.scanTime && 
-              (new Date() - new Date(cachedResults.scanTime)) < 60 * 60 * 1000) {
-            // Если есть результаты и они свежие (не старше 1 часа), возвращаем их
-            return res.json({
-              results: cachedResults.results,
-              scanTime: cachedResults.scanTime,
-              totalScanned: cachedResults.totalScanned,
-              fromCache: true
-            });
-          } else {
-            // Если кэш устарел или пуст, выполняем полное сканирование
-            performFullScan();
-          }
-        });
+        // Используем async/await вместо callback
+        const cachedResults = await pairScanner._getLastScanResultsAsync(filters);
+        
+        // Если есть результаты и они свежие (не старше 1 часа), возвращаем их
+        if (cachedResults && cachedResults.results && cachedResults.results.length > 0 && 
+            cachedResults.scanTime && 
+            (new Date() - new Date(cachedResults.scanTime)) < 60 * 60 * 1000) {
+          console.log('Using cached scan results');
+          return res.json({
+            results: cachedResults.results,
+            scanTime: cachedResults.scanTime,
+            totalScanned: cachedResults.totalScanned,
+            fromCache: true
+          });
+        }
       } catch (cacheError) {
         console.warn('Error with cache retrieval:', cacheError.message);
-        performFullScan();
+        // Продолжаем выполнение, если кэш не найден или устарел
       }
-    } else {
-      // Если требуется принудительное обновление, сразу запускаем полное сканирование
-      performFullScan();
     }
 
-    // Функция для выполнения полного сканирования
-    async function performFullScan() {
-      console.log('Starting full pair scan...');
-      
-      // Запускаем полное сканирование
-      pairScanner.scanAllPairs(scanOptions, (err, scanResults) => {
-        if (err) {
-          console.error('Error performing full scan:', err);
-          return res.status(500).json({ error: err.message });
-        }
-        
-        res.json({
-          results: scanResults.results,
-          scanTime: scanResults.scanTime,
-          totalScanned: scanResults.totalScanned,
-          fromCache: false
+    console.log('Starting full pair scan...');
+    
+    // Модифицируем scanAllPairs для работы с Promise вместо callback
+    const scanAllPairsPromise = (options) => {
+      return new Promise((resolve, reject) => {
+        pairScanner.scanAllPairs(options, (err, results) => {
+          if (err) reject(err);
+          else resolve(results);
         });
       });
+    };
+    
+    try {
+      // Запускаем полное сканирование с использованием Promise
+      const scanResults = await scanAllPairsPromise(scanOptions);
+      
+      res.json({
+        results: scanResults.results || [],
+        scanTime: scanResults.scanTime || new Date(),
+        totalScanned: scanResults.totalScanned || 0,
+        fromCache: false
+      });
+    } catch (scanError) {
+      console.error('Error during scan:', scanError);
+      // Если произошла ошибка сканирования, пытаемся вернуть последние сохраненные результаты
+      try {
+        // Используем async/await вместо callback
+        const backupResults = await pairScanner._getLastScanResultsAsync({});
+        
+        // Даже если ошибка, но есть старые результаты - возвращаем их
+        if (backupResults && backupResults.results && backupResults.results.length > 0) {
+          console.log('Returning backup scan results after error');
+          return res.json({
+            results: backupResults.results,
+            scanTime: backupResults.scanTime,
+            totalScanned: backupResults.totalScanned,
+            fromCache: true,
+            scanError: scanError.message
+          });
+        } else {
+          throw scanError; // Переходим к общей обработке ошибок
+        }
+      } catch (backupError) {
+        // Если не удалось получить даже резервные данные, возвращаем ошибку
+        throw scanError;
+      }
     }
   } catch (error) {
     console.error('Error scanning pairs:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: error.message,
+      code: 'SCAN_ERROR',
+      // Предоставляем хотя бы какие-то примерные данные для работы фронтенда
+      results: [
+        {
+          symbol: 'BTCUSDT',
+          baseCoin: 'BTC',
+          quoteCoin: 'USDT',
+          price: 50000,
+          priceChange24h: 1.5,
+          volume24h: 5000000,
+          spread: 0.1,
+          volatility: 2.5,
+          trendStrength: 0.7,
+          marketType: 'TRENDING',
+          recommendedStrategy: 'DCA',
+          score: 85,
+          scanTime: new Date()
+        },
+        {
+          symbol: 'ETHUSDT',
+          baseCoin: 'ETH',
+          quoteCoin: 'USDT',
+          price: 3000,
+          priceChange24h: 0.8,
+          volume24h: 3000000,
+          spread: 0.15,
+          volatility: 2.0,
+          trendStrength: 0.6,
+          marketType: 'VOLATILE',
+          recommendedStrategy: 'SCALPING',
+          score: 75,
+          scanTime: new Date()
+        },
+        {
+          symbol: 'SOLUSDT',
+          baseCoin: 'SOL',
+          quoteCoin: 'USDT',
+          price: 150,
+          priceChange24h: 2.2,
+          volume24h: 2000000,
+          spread: 0.2,
+          volatility: 3.5,
+          trendStrength: 0.8,
+          marketType: 'TRENDING',
+          recommendedStrategy: 'DCA',
+          score: 80,
+          scanTime: new Date()
+        }
+      ]
+    });
   }
 };
-
 // API для фильтрации по объему и другим параметрам
 exports.filterPairs = async (req, res) => {
   try {

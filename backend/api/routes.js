@@ -17,7 +17,10 @@ router.get('/bot/stats', botController.getStats);
 router.post('/bot/strategy', botController.setStrategy);
 router.get('/bot/market-analysis', botController.analyzeMarket);
 
-// Маршруты для сканирования и анализа пар
+// Новый маршрут для сканирования пар, соответствующий вызову из фронтенда
+router.get('/bot/scan-pairs', botController.scanPairs);
+
+// Оставляем старый маршрут для обратной совместимости
 router.get('/market/scan-pairs', botController.scanPairs);
 router.get('/market/filter-pairs', botController.filterPairs);
 

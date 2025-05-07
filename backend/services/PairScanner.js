@@ -320,96 +320,109 @@ class PairScanner {
   _saveScanResult(result) {
     // Оборачиваем в try-catch, чтобы ошибки БД не влияли на основной процесс
     try {
-      PairScanResult.findOne({ symbol: result.symbol }, (findErr, scanRecord) => {
-        if (findErr) {
-          console.error(`Error finding scan record for ${result.symbol}:`, findErr);
-          return;
-        }
-        
-        if (scanRecord) {
-          // Обновляем существующую запись
-          scanRecord.price = result.price;
-          scanRecord.priceChange24h = result.priceChange24h;
-          scanRecord.volume24h = result.volume24h;
-          scanRecord.spread = result.spread;
-          scanRecord.volatility = result.volatility;
-          scanRecord.trendStrength = result.trendStrength;
-          scanRecord.marketType = result.marketType;
-          scanRecord.recommendedStrategy = result.recommendedStrategy;
-          scanRecord.score = result.score;
-          scanRecord.lastScanTime = new Date();
-          
-          // Добавляем исторические данные
-          scanRecord.history.push({
-            timestamp: new Date(),
-            price: result.price,
-            volume: result.volume24h,
-            volatility: result.volatility,
-            score: result.score,
-            recommendedStrategy: result.recommendedStrategy
-          });
-          
-          // Ограничиваем историю до 30 записей
-          if (scanRecord.history.length > 30) {
-            scanRecord.history = scanRecord.history.slice(-30);
-          }
-          
-          scanRecord.save((saveErr) => {
-            if (saveErr) {
-              console.error(`Error saving scan record for ${result.symbol}:`, saveErr);
-            }
-          });
-        } else {
-          // Создаем новую запись
-          const newRecord = new PairScanResult({
-            symbol: result.symbol,
-            baseCoin: result.baseCoin,
-            quoteCoin: result.quoteCoin,
-            price: result.price,
-            priceChange24h: result.priceChange24h,
-            volume24h: result.volume24h,
-            spread: result.spread,
-            volatility: result.volatility,
-            trendStrength: result.trendStrength,
-            marketType: result.marketType,
-            recommendedStrategy: result.recommendedStrategy,
-            score: result.score,
-            firstScanTime: new Date(),
-            lastScanTime: new Date(),
-            history: [{
+      // Используем Promise вместо callback
+      PairScanResult.findOne({ symbol: result.symbol })
+        .then(scanRecord => {
+          if (scanRecord) {
+            // Обновляем существующую запись
+            scanRecord.price = result.price;
+            scanRecord.priceChange24h = result.priceChange24h;
+            scanRecord.volume24h = result.volume24h;
+            scanRecord.spread = result.spread;
+            scanRecord.volatility = result.volatility;
+            scanRecord.trendStrength = result.trendStrength;
+            scanRecord.marketType = result.marketType;
+            scanRecord.recommendedStrategy = result.recommendedStrategy;
+            scanRecord.score = result.score;
+            scanRecord.lastScanTime = new Date();
+            
+            // Добавляем исторические данные
+            scanRecord.history.push({
               timestamp: new Date(),
               price: result.price,
               volume: result.volume24h,
               volatility: result.volatility,
               score: result.score,
               recommendedStrategy: result.recommendedStrategy
-            }]
-          });
-          
-          newRecord.save((saveErr) => {
-            if (saveErr) {
-              console.error(`Error creating scan record for ${result.symbol}:`, saveErr);
+            });
+            
+            // Ограничиваем историю до 30 записей
+            if (scanRecord.history.length > 30) {
+              scanRecord.history = scanRecord.history.slice(-30);
             }
-          });
-        }
-      });
+            
+            return scanRecord.save();
+          } else {
+            // Создаем новую запись
+            const newRecord = new PairScanResult({
+              symbol: result.symbol,
+              baseCoin: result.baseCoin,
+              quoteCoin: result.quoteCoin,
+              price: result.price,
+              priceChange24h: result.priceChange24h,
+              volume24h: result.volume24h,
+              spread: result.spread,
+              volatility: result.volatility,
+              trendStrength: result.trendStrength,
+              marketType: result.marketType,
+              recommendedStrategy: result.recommendedStrategy,
+              score: result.score,
+              firstScanTime: new Date(),
+              lastScanTime: new Date(),
+              history: [{
+                timestamp: new Date(),
+                price: result.price,
+                volume: result.volume24h,
+                volatility: result.volatility,
+                score: result.score,
+                recommendedStrategy: result.recommendedStrategy
+              }]
+            });
+            
+            return newRecord.save();
+          }
+        })
+        .then(() => {
+          console.log(`Saved scan results for ${result.symbol} to database`);
+        })
+        .catch(saveErr => {
+          console.error(`Error saving scan record for ${result.symbol}:`, saveErr);
+        });
     } catch (dbError) {
       console.error(`Database error for ${result.symbol}:`, dbError);
     }
   }
 
-  // Получение предыдущих результатов сканирования
+  // Получение предыдущих результатов сканирования (поддержка callback для обратной совместимости)
   getLastScanResults(filters = {}, callback) {
+    // Если используется callback-подход, преобразуем в Promise
+    if (typeof callback === 'function') {
+      try {
+        this._getLastScanResultsAsync(filters)
+          .then(results => callback(null, results))
+          .catch(error => callback(error));
+      } catch (error) {
+        callback(error);
+      }
+      return;
+    }
+    
+    // Если callback не указан, возвращаем Promise
+    return this._getLastScanResultsAsync(filters);
+  }
+
+  // Внутренний метод с использованием Promise
+  async _getLastScanResultsAsync(filters = {}) {
     // Если есть кэшированные результаты и фильтры не указаны, возвращаем их
     if (Object.keys(this.scanResults).length > 0 && Object.keys(filters).length === 0) {
       const results = Object.values(this.scanResults);
       results.sort((a, b) => b.score - a.score);
-      return callback(null, {
+      return {
         results,
         scanTime: this.lastScanTime,
         totalScanned: results.length,
         fromCache: true
-      });
+      };
     }
 
     // Иначе запрашиваем из базы данных
@@ -422,7 +435,7 @@ class PairScanner {
       }
       
       if (filters.minVolume) {
-        query.volume24h = { $gte: filters.volume24h };
+        query.volume24h = { $gte: filters.minVolume };
       }
       
       if (filters.strategy) {
@@ -437,24 +450,20 @@ class PairScanner {
         query.baseCoin = filters.baseCoin;
       }
       
-      // Запрашиваем с сортировкой по скору
-      PairScanResult.find(query)
+      // Запрашиваем с сортировкой по скору, используя async/await вместо callback
+      const results = await PairScanResult.find(query)
         .sort({ score: -1 })
-        .limit(filters.limit || 100)
-        .exec((err, results) => {
-          if (err) {
-            return callback(err);
-          }
-          
-          callback(null, {
-            results,
-            scanTime: results.length > 0 ? results[0].lastScanTime : null,
-            totalScanned: results.length,
-            fromCache: false
-          });
-        });
+        .limit(filters.limit || 100);
+      
+      return {
+        results,
+        scanTime: results.length > 0 ? results[0].lastScanTime : null,
+        totalScanned: results.length,
+        fromCache: false
+      };
     } catch (error) {
-      callback(error);
+      console.error('Error getting scan results from database:', error);
+      throw error;
     }
   }
 }
