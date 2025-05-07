@@ -3,10 +3,10 @@
 class PairFilter {
   constructor() {
     this.defaultOptions = {
-      minVolume: 1000000,     // Минимальный объем 24ч в USDT
-      minTradeCount: 1000,    // Минимальное количество сделок за 24ч
-      maxSpread: 0.5,         // Максимальный спред в %
-      minLiquidity: 0.5,      // Минимальная ликвидность (0-1)
+      minVolume: 50000,       // Уменьшаем с 1000000 до 50000 USDT
+      minTradeCount: 100,     // Уменьшаем с 1000 до 100
+      maxSpread: 1.0,         // Увеличиваем с 0.5% до 1.0%
+      minLiquidity: 0.3,      // Уменьшаем с 0.5 до 0.3
       minPriceChange: 0,      // Минимальное изменение цены в %
       maxPriceChange: 100,    // Максимальное изменение цены в %
       filterByBase: [],       // Фильтр по базовой валюте
@@ -18,60 +18,78 @@ class PairFilter {
     };
   }
 
-  // Фильтрация пар по заданным критериям
+  // Улучшенная функция filterPairs, обеспечивающая обработку ошибок
   filterPairs(pairs, options = {}, callback) {
     try {
       const filterOptions = { ...this.defaultOptions, ...options };
-      console.log(`Filtering ${pairs.length} pairs with options:`, filterOptions);
+      console.log(`Filtering ${pairs ? pairs.length : 0} pairs with options:`, filterOptions);
+      
+      // Проверка на пустые массивы
+      if (!pairs || !Array.isArray(pairs) || pairs.length === 0) {
+        console.warn('Empty or invalid pairs array provided to filterPairs');
+        return callback(null, []);
+      }
       
       const filteredPairs = pairs.filter(pair => {
-        // Проверяем, что пара имеет все необходимые данные
-        if (!pair || !pair.symbol) {
-          console.warn('Invalid pair data:', pair);
+        // Проверка структуры объекта pair
+        if (!pair || typeof pair !== 'object') {
+          console.warn('Invalid pair data (not an object):', pair);
           return false;
         }
         
-        // Фильтр по минимальному объему
+        // Проверка наличия ключевого поля (symbol)
+        if (!pair.symbol) {
+          console.warn('Invalid pair data (no symbol):', pair);
+          return false;
+        }
+        
+        // Фильтр по минимальному объему - КЛЮЧЕВОЙ ФИЛЬТР
         if (filterOptions.minVolume > 0) {
-          const volume = pair.volume24h || 0;
-          if (volume < filterOptions.minVolume) {
+          const volume = parseFloat(pair.volume24h || 0);
+          if (isNaN(volume) || volume < filterOptions.minVolume) {
+            // console.debug(`${pair.symbol} отфильтрован по объему: ${volume} < ${filterOptions.minVolume}`);
             return false;
           }
         }
         
         // Фильтр по количеству сделок
         if (filterOptions.minTradeCount > 0 && pair.tradeCount) {
-          if (pair.tradeCount < filterOptions.minTradeCount) {
+          const tradeCount = parseInt(pair.tradeCount || 0);
+          if (isNaN(tradeCount) || tradeCount < filterOptions.minTradeCount) {
             return false;
           }
         }
         
         // Фильтр по спреду
         if (filterOptions.maxSpread > 0 && pair.spread) {
-          if (pair.spread > filterOptions.maxSpread) {
+          const spread = parseFloat(pair.spread || 0);
+          if (isNaN(spread) || spread > filterOptions.maxSpread) {
             return false;
           }
         }
         
         // Фильтр по изменению цены
         if (pair.priceChange24h) {
-          const absPriceChange = Math.abs(pair.priceChange24h);
-          if (absPriceChange < filterOptions.minPriceChange || 
-              absPriceChange > filterOptions.maxPriceChange) {
-            return false;
+          const priceChange = parseFloat(pair.priceChange24h || 0);
+          if (!isNaN(priceChange)) {
+            const absPriceChange = Math.abs(priceChange);
+            if (absPriceChange < filterOptions.minPriceChange || 
+                absPriceChange > filterOptions.maxPriceChange) {
+              return false;
+            }
           }
         }
         
         // Фильтр по базовой валюте
-        if (filterOptions.filterByBase.length > 0) {
-          if (!filterOptions.filterByBase.includes(pair.baseCoin)) {
+        if (filterOptions.filterByBase && filterOptions.filterByBase.length > 0) {
+          if (!pair.baseCoin || !filterOptions.filterByBase.includes(pair.baseCoin)) {
             return false;
           }
         }
         
         // Исключение по базовой валюте
-        if (filterOptions.excludeBases.length > 0) {
-          if (filterOptions.excludeBases.includes(pair.baseCoin)) {
+        if (filterOptions.excludeBases && filterOptions.excludeBases.length > 0) {
+          if (pair.baseCoin && filterOptions.excludeBases.includes(pair.baseCoin)) {
             return false;
           }
         }
@@ -79,28 +97,23 @@ class PairFilter {
         // Исключение стейблкоинов
         if (filterOptions.excludeStablecoins) {
           const stablecoins = ['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'UST', 'USTC'];
-          if (stablecoins.includes(pair.baseCoin)) {
+          if (pair.baseCoin && stablecoins.includes(pair.baseCoin)) {
             return false;
           }
         }
         
         // Фильтр по рыночной капитализации
         if (filterOptions.marketCap > 0 && pair.marketCap) {
-          if (pair.marketCap < filterOptions.marketCap) {
+          const marketCap = parseFloat(pair.marketCap || 0);
+          if (isNaN(marketCap) || marketCap < filterOptions.marketCap) {
             return false;
           }
         }
         
         // Фильтр по скору
         if (filterOptions.minScore > 0 && pair.score) {
-          if (pair.score < filterOptions.minScore) {
-            return false;
-          }
-        }
-        
-        // Фильтр по возрасту монеты
-        if (filterOptions.maxCoinAge > 0 && pair.coinAge) {
-          if (pair.coinAge > filterOptions.maxCoinAge) {
+          const score = parseFloat(pair.score || 0);
+          if (isNaN(score) || score < filterOptions.minScore) {
             return false;
           }
         }
@@ -109,8 +122,10 @@ class PairFilter {
         return true;
       });
       
+      console.log(`After filtering: ${filteredPairs.length} pairs passed filters`);
       callback(null, filteredPairs);
     } catch (error) {
+      console.error('Error in filterPairs:', error);
       callback(error);
     }
   }

@@ -228,6 +228,276 @@ class MarketAnalyzer {
     });
   }
 
+  // Новый метод для генерации торговых сигналов
+  generateTradingSignals(timeframe = '1h', callback) {
+    this.updateHistoricalData(timeframe, (err, data) => {
+      if (err) {
+        return callback(err);
+      }
+      
+      const { hourlyPrices, minutePrices } = data;
+      
+      if (!hourlyPrices || hourlyPrices.length < 20) {
+        return callback(new Error(`Insufficient historical data for ${this.symbol}`));
+      }
+      
+      try {
+        // Получаем все необходимые индикаторы
+        const rsi = this.calculateRSI(hourlyPrices);
+        const macdSignal = this.calculateMACD(hourlyPrices);
+        const bbWidth = this.calculateBollingerBands(hourlyPrices);
+        const volatility = this.calculateVolatility(hourlyPrices);
+        const volumeRatio = this.calculateVolumeRatio(hourlyPrices);
+        const trendStrength = this.calculateTrendStrength(hourlyPrices);
+
+        // Анализ ценовых паттернов
+        const priceAction = this.analyzePriceAction(hourlyPrices);
+        
+        // Поиск уровней поддержки и сопротивления
+        const support = this.findSupportLevel(hourlyPrices);
+        const resistance = this.findResistanceLevel(hourlyPrices);
+
+        // Текущая цена (закрытие последней свечи)
+        const currentPrice = hourlyPrices[hourlyPrices.length - 1].close;
+        
+        // Массив для хранения обнаруженных сигналов
+        const signals = [];
+
+        // 1. Сигналы на основе отката к уровню поддержки
+        const supportDistance = (currentPrice - support) / currentPrice * 100;
+        if (supportDistance >= 0 && supportDistance < 2.0) {
+          // Цена близко к уровню поддержки (менее 2% от текущей цены)
+          const supportSignal = {
+            type: 'LONG',
+            reason: 'SUPPORT_LEVEL',
+            strength: 0.7 + (2.0 - supportDistance) / 10, // Сила сигнала зависит от близости к уровню
+            price: currentPrice,
+            targetPrice: resistance,
+            stopLoss: support * 0.98, // Стоп-лосс чуть ниже уровня поддержки
+            description: `Цена вблизи уровня поддержки ${support.toFixed(2)}, потенциальный отскок`
+          };
+          signals.push(supportSignal);
+        }
+
+        // 2. Сигналы на основе отката к уровню сопротивления
+        const resistanceDistance = (resistance - currentPrice) / currentPrice * 100;
+        if (resistanceDistance >= 0 && resistanceDistance < 2.0) {
+          // Цена близко к уровню сопротивления (менее 2% от текущей цены)
+          const resistanceSignal = {
+            type: 'SHORT',
+            reason: 'RESISTANCE_LEVEL',
+            strength: 0.7 + (2.0 - resistanceDistance) / 10,
+            price: currentPrice,
+            targetPrice: support,
+            stopLoss: resistance * 1.02, // Стоп-лосс чуть выше уровня сопротивления
+            description: `Цена вблизи уровня сопротивления ${resistance.toFixed(2)}, потенциальный разворот вниз`
+          };
+          signals.push(resistanceSignal);
+        }
+
+        // 3. Сигналы на основе RSI
+        if (rsi < 30) {
+          // Перепроданность - сигнал на покупку
+          const rsiSignal = {
+            type: 'LONG',
+            reason: 'RSI_OVERSOLD',
+            strength: 0.6 + (30 - rsi) / 100, // Чем ниже RSI, тем сильнее сигнал
+            price: currentPrice,
+            targetPrice: currentPrice * (1 + volatility / 100),
+            stopLoss: currentPrice * (1 - volatility / 200),
+            description: `RSI в зоне перепроданности (${rsi.toFixed(2)}), потенциальный разворот вверх`
+          };
+          signals.push(rsiSignal);
+        } else if (rsi > 70) {
+          // Перекупленность - сигнал на продажу
+          const rsiSignal = {
+            type: 'SHORT',
+            reason: 'RSI_OVERBOUGHT',
+            strength: 0.6 + (rsi - 70) / 100, // Чем выше RSI, тем сильнее сигнал
+            price: currentPrice,
+            targetPrice: currentPrice * (1 - volatility / 100),
+            stopLoss: currentPrice * (1 + volatility / 200),
+            description: `RSI в зоне перекупленности (${rsi.toFixed(2)}), потенциальный разворот вниз`
+          };
+          signals.push(rsiSignal);
+        }
+
+        // 4. Сигналы на основе MACD
+        if (macdSignal === 'BUY') {
+          const macdBuySignal = {
+            type: 'LONG',
+            reason: 'MACD_BULLISH_CROSS',
+            strength: 0.75,
+            price: currentPrice,
+            targetPrice: currentPrice * (1 + volatility / 50),
+            stopLoss: currentPrice * (1 - volatility / 100),
+            description: 'Бычье пересечение MACD, сильный сигнал на покупку'
+          };
+          signals.push(macdBuySignal);
+        } else if (macdSignal === 'SELL') {
+          const macdSellSignal = {
+            type: 'SHORT',
+            reason: 'MACD_BEARISH_CROSS',
+            strength: 0.75,
+            price: currentPrice,
+            targetPrice: currentPrice * (1 - volatility / 50),
+            stopLoss: currentPrice * (1 + volatility / 100),
+            description: 'Медвежье пересечение MACD, сильный сигнал на продажу'
+          };
+          signals.push(macdSellSignal);
+        }
+
+        // 5. Сигналы на основе объема
+        if (volumeRatio > 2.0 && priceAction.pattern !== 'UNKNOWN') {
+          // Резкое увеличение объема с подтверждением паттерна
+          const volumeSignal = {
+            type: priceAction.pattern.includes('UP') ? 'LONG' : priceAction.pattern.includes('DOWN') ? 'SHORT' : 'NEUTRAL',
+            reason: 'VOLUME_SPIKE',
+            strength: 0.6 + (volumeRatio - 2.0) / 10, // Максимум 0.8
+            price: currentPrice,
+            targetPrice: priceAction.pattern.includes('UP') ? 
+                         currentPrice * (1 + volatility / 100) : 
+                         currentPrice * (1 - volatility / 100),
+            stopLoss: priceAction.pattern.includes('UP') ? 
+                      currentPrice * (1 - volatility / 200) : 
+                      currentPrice * (1 + volatility / 200),
+            description: `Резкое увеличение объема (${volumeRatio.toFixed(2)}x) с паттерном ${priceAction.pattern}`
+          };
+          
+          if (volumeSignal.type !== 'NEUTRAL') {
+            signals.push(volumeSignal);
+          }
+        }
+
+        // 6. Сигналы на основе пробоя диапазона Боллинджера
+        // Получаем полосы Боллинджера
+        const { upperBand, lowerBand } = this._getBollingerBands(hourlyPrices);
+        
+        if (upperBand && lowerBand) {
+          if (currentPrice > upperBand) {
+            // Если текущая цена выше верхней полосы, это может быть сигналом на продажу (или продолжение тренда)
+            const bbSignal = trendStrength > 0.7 ? 
+              {
+                // При сильном тренде - прорыв вверх
+                type: 'LONG',
+                reason: 'BB_UPPER_BREAKOUT',
+                strength: 0.65,
+                price: currentPrice,
+                targetPrice: currentPrice * (1 + volatility / 100),
+                stopLoss: upperBand * 0.98,
+                description: 'Прорыв верхней полосы Боллинджера при сильном тренде'
+              } : 
+              {
+                // При слабом тренде - возврат к среднему
+                type: 'SHORT',
+                reason: 'BB_UPPER_DEVIATION',
+                strength: 0.6,
+                price: currentPrice,
+                targetPrice: (upperBand + lowerBand) / 2, // Целевая цена - средняя линия
+                stopLoss: currentPrice * 1.02,
+                description: 'Цена выше верхней полосы Боллинджера, потенциальный возврат к среднему'
+              };
+            signals.push(bbSignal);
+          } else if (currentPrice < lowerBand) {
+            // Если текущая цена ниже нижней полосы, это может быть сигналом на покупку (или продолжение тренда)
+            const bbSignal = trendStrength > 0.7 ? 
+              {
+                // При сильном тренде - прорыв вниз
+                type: 'SHORT',
+                reason: 'BB_LOWER_BREAKOUT',
+                strength: 0.65,
+                price: currentPrice,
+                targetPrice: currentPrice * (1 - volatility / 100),
+                stopLoss: lowerBand * 1.02,
+                description: 'Прорыв нижней полосы Боллинджера при сильном тренде'
+              } : 
+              {
+                // При слабом тренде - возврат к среднему
+                type: 'LONG',
+                reason: 'BB_LOWER_DEVIATION',
+                strength: 0.6,
+                price: currentPrice,
+                targetPrice: (upperBand + lowerBand) / 2, // Целевая цена - средняя линия
+                stopLoss: currentPrice * 0.98,
+                description: 'Цена ниже нижней полосы Боллинджера, потенциальный возврат к среднему'
+              };
+            signals.push(bbSignal);
+          }
+        }
+
+        // 7. Сигналы на основе паттернов свечей
+        if (priceAction.pattern === 'DOUBLE_BOTTOM' && priceAction.strength > 0.7) {
+          const patternSignal = {
+            type: 'LONG',
+            reason: 'PATTERN_DOUBLE_BOTTOM',
+            strength: priceAction.strength,
+            price: currentPrice,
+            targetPrice: currentPrice * (1 + volatility / 50),
+            stopLoss: currentPrice * (1 - volatility / 100),
+            description: 'Обнаружен паттерн "двойное дно", сильный сигнал на покупку'
+          };
+          signals.push(patternSignal);
+        } else if (priceAction.pattern === 'DOUBLE_TOP' && priceAction.strength > 0.7) {
+          const patternSignal = {
+            type: 'SHORT',
+            reason: 'PATTERN_DOUBLE_TOP',
+            strength: priceAction.strength,
+            price: currentPrice,
+            targetPrice: currentPrice * (1 - volatility / 50),
+            stopLoss: currentPrice * (1 + volatility / 100),
+            description: 'Обнаружен паттерн "двойная вершина", сильный сигнал на продажу'
+          };
+          signals.push(patternSignal);
+        }
+
+        // 8. Сильный тренд с подтверждением объема
+        if (trendStrength > 0.8 && volumeRatio > 1.5) {
+          // Определение направления тренда
+          const trendDirection = this._detectTrendDirection(hourlyPrices);
+          
+          if (trendDirection === 'UP') {
+            const trendSignal = {
+              type: 'LONG',
+              reason: 'STRONG_UPTREND',
+              strength: 0.7 + (trendStrength - 0.8) * 2.5, // Максимум 0.95
+              price: currentPrice,
+              targetPrice: currentPrice * (1 + volatility / 40),
+              stopLoss: currentPrice * (1 - volatility / 80),
+              description: 'Сильный восходящий тренд с подтверждением объема'
+            };
+            signals.push(trendSignal);
+          } else if (trendDirection === 'DOWN') {
+            const trendSignal = {
+              type: 'SHORT',
+              reason: 'STRONG_DOWNTREND',
+              strength: 0.7 + (trendStrength - 0.8) * 2.5, // Максимум 0.95
+              price: currentPrice,
+              targetPrice: currentPrice * (1 - volatility / 40),
+              stopLoss: currentPrice * (1 + volatility / 80),
+              description: 'Сильный нисходящий тренд с подтверждением объема'
+            };
+            signals.push(trendSignal);
+          }
+        }
+
+        // Сортируем сигналы по силе (от наиболее сильных к слабым)
+        signals.sort((a, b) => b.strength - a.strength);
+
+        // Добавляем информацию о таймфрейме и времени генерации
+        const result = {
+          symbol: this.symbol,
+          timeframe,
+          timestamp: Date.now(),
+          signals
+        };
+
+        callback(null, result);
+      } catch (error) {
+        callback(error);
+      }
+    });
+  }
+
   // Расчет волатильности (ATR на основе истории)
   calculateVolatility(prices) {
     if (!prices || prices.length < 2) return 0;
@@ -443,6 +713,32 @@ class MarketAnalyzer {
     const bandWidth = ((upperBand - lowerBand) / sma) * 100;
     
     return bandWidth;
+  }
+
+  // Вспомогательный метод для получения полос Боллинджера
+  _getBollingerBands(prices) {
+    if (!prices || prices.length < this.params.shortPeriod) return { upperBand: null, lowerBand: null };
+    
+    const period = this.params.shortPeriod;
+    const multiplier = 2.0; // 2 стандартных отклонения
+    
+    // Берем последние N цен
+    const recentPrices = prices.slice(-period);
+    const closePrices = recentPrices.map(candle => candle.close);
+    
+    // Средняя цена (SMA)
+    const sma = closePrices.reduce((sum, price) => sum + price, 0) / period;
+    
+    // Расчет стандартного отклонения
+    const squaredDifferences = closePrices.map(price => Math.pow(price - sma, 2));
+    const variance = squaredDifferences.reduce((sum, val) => sum + val, 0) / period;
+    const standardDeviation = Math.sqrt(variance);
+    
+    // Верхняя и нижняя полосы
+    const upperBand = sma + (multiplier * standardDeviation);
+    const lowerBand = sma - (multiplier * standardDeviation);
+    
+    return { upperBand, lowerBand, middleBand: sma };
   }
 
   // Вспомогательная функция для расчета EMA
@@ -737,7 +1033,7 @@ class MarketAnalyzer {
     let phase = 'UNKNOWN';
     let confidence = 0.5;
     
-    const lastPrice = prices[prices.length - 1].close;
+    const lastPrice = prices[prices.length -.1].close;
     const startPrice = prices[0].close;
     const overallTrend = lastPrice > startPrice ? 'UP' : 'DOWN';
     
@@ -789,6 +1085,42 @@ class MarketAnalyzer {
         overallTrend
       }
     };
+  }
+
+  // Вспомогательный метод для определения направления тренда
+  _detectTrendDirection(prices) {
+    if (!prices || prices.length < 20) return 'NEUTRAL';
+    
+    // Используем линейную регрессию на последних 20 свечах
+    const recentPrices = prices.slice(-20);
+    const closePrices = recentPrices.map(price => price.close);
+    
+    const n = closePrices.length;
+    const x = Array.from({length: n}, (_, i) => i);
+    
+    // Средние значения x и y
+    const xMean = x.reduce((sum, xi) => sum + xi, 0) / n;
+    const yMean = closePrices.reduce((sum, yi) => sum + yi, 0) / n;
+    
+    // Рассчитываем коэффициент наклона
+    let numerator = 0;
+    let denominator = 0;
+    
+    for (let i = 0; i < n; i++) {
+      numerator += (x[i] - xMean) * (closePrices[i] - yMean);
+      denominator += Math.pow(x[i] - xMean, 2);
+    }
+    
+    const slope = denominator !== 0 ? numerator / denominator : 0;
+    
+    // Определяем направление на основе наклона
+    if (slope > 0.0005 * yMean) {
+      return 'UP';
+    } else if (slope < -0.0005 * yMean) {
+      return 'DOWN';
+    } else {
+      return 'NEUTRAL';
+    }
   }
 
   // Вспомогательные методы для анализа паттернов
