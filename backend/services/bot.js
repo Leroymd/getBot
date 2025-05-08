@@ -2,9 +2,8 @@
 const Trade = require('../api/models/Trade');
 const ScalpingStrategy = require('./strategies/ScalpingStrategy');
 const DCAStrategy = require('./strategies/DCAStrategy');
-const AutoSwitchingStrategy = require('./strategies/AutoSwitchingStrategy');
 const SignalAnalyzer = require('./SignalAnalyzer');
-const SignalSettings = require('../models/SignalSettings');
+const SignalSettings = require('../api/models/SignalSettings');
 
 /**
  * Класс торгового бота BitGet
@@ -33,15 +32,10 @@ class Bot {
     // Стратегии
     this.scalping = new ScalpingStrategy(this.symbol, this.config.scalping, this.api);
     this.dcaStrategy = new DCAStrategy(this.symbol, this.config.dca, this.api);
-    this.autoSwitchingStrategy = new AutoSwitchingStrategy(this.symbol, this.config.autoSwitching, this.api, {
-      scalping: this.scalping,
-      dca: this.dcaStrategy
-    });
     
-    // Текущая активная стратегия
+    // Устанавливаем текущую активную стратегию
     this.currentStrategy = this.config.activeStrategy === 'SCALPING' ? 
-      this.scalping : (this.config.activeStrategy === 'AUTO' ? 
-        this.autoSwitchingStrategy : this.dcaStrategy);
+      this.scalping : this.dcaStrategy;
     
     // Анализатор сигналов
     this.signalAnalyzer = new SignalAnalyzer(this.symbol, this.config, this.api);
@@ -660,9 +654,11 @@ class Bot {
     }
     
     // 5. Проверка через активную стратегию
-    const closeSignal = await this.currentStrategy.shouldClosePosition(currentPrice, position);
-    if (closeSignal) {
-      return closeSignal;
+    if (typeof this.currentStrategy.shouldClosePosition === 'function') {
+      const closeSignal = await this.currentStrategy.shouldClosePosition(currentPrice, position);
+      if (closeSignal) {
+        return closeSignal;
+      }
     }
     
     return false;
@@ -936,18 +932,24 @@ class Bot {
    * @returns {string} - Текущая стратегия
    */
   setStrategy(strategyName) {
-    const strategies = {
-      'SCALPING': this.scalping,
-      'DCA': this.dcaStrategy,
-      'AUTO': this.autoSwitchingStrategy
-    };
-    
-    if (strategies[strategyName]) {
-      this.currentStrategy = strategies[strategyName];
-      this.config.activeStrategy = strategyName;
-      this.stats.activeStrategy = strategyName;
-      
-      this.logger.log(`Strategy set to ${strategyName} for ${this.symbol}`);
+    // Упрощенная реализация переключения стратегий
+    if (strategyName === 'SCALPING') {
+      this.currentStrategy = this.scalping;
+      this.config.activeStrategy = 'SCALPING';
+      this.stats.activeStrategy = 'SCALPING';
+      this.logger.log(`Strategy set to SCALPING for ${this.symbol}`);
+    } else if (strategyName === 'DCA') {
+      this.currentStrategy = this.dcaStrategy;
+      this.config.activeStrategy = 'DCA';
+      this.stats.activeStrategy = 'DCA';
+      this.logger.log(`Strategy set to DCA for ${this.symbol}`);
+    } else if (strategyName === 'AUTO') {
+      // В AUTO режиме стратегия будет определяться при каждом обновлении
+      this.config.activeStrategy = 'AUTO';
+      this.stats.activeStrategy = 'AUTO';
+      // Сразу запускаем обновление стратегии
+      this.updateActiveStrategy();
+      this.logger.log(`Strategy set to AUTO for ${this.symbol}`);
     } else {
       this.logger.error(`Invalid strategy: ${strategyName}`);
     }
@@ -961,36 +963,105 @@ class Bot {
    */
   async updateActiveStrategy() {
     try {
-      // Получаем анализ рынка и рекомендуемую стратегию
-      const marketAnalysis = await this.currentStrategy.analyzeMarketConditions('1h');
+      // Получаем текущие исторические данные
+      const klines = await this.api.getKlines(this.symbol, '1h', 100);
+      if (!klines || !klines.data || !Array.isArray(klines.data)) {
+        this.logger.error(`[Bot ${this.symbol}] Failed to get klines for market analysis`);
+        return this.stats.activeStrategy;
+      }
+      
+      // Преобразуем данные для анализа
+      const candles = klines.data.map(candle => ({
+        time: parseInt(candle[0]),
+        open: parseFloat(candle[1]),
+        high: parseFloat(candle[2]),
+        low: parseFloat(candle[3]),
+        close: parseFloat(candle[4]),
+        volume: parseFloat(candle[5])
+      }));
+      
+      // Определяем тип рынка и рекомендуемую стратегию
+      let marketType = 'UNKNOWN';
+      let recommendedStrategy = 'DCA';
+      let volatility = 0;
+      let volumeRatio = 1;
+      let trendStrength = 0;
+      
+      // Расчет волатильности
+      if (candles.length >= 24) {
+        const recentCandles = candles.slice(-24);
+        const highs = recentCandles.map(c => c.high);
+        const lows = recentCandles.map(c => c.low);
+        const closes = recentCandles.map(c => c.close);
+        
+        // Средний диапазон свечей
+        const ranges = [];
+        for (let i = 0; i < recentCandles.length; i++) {
+          ranges.push(recentCandles[i].high - recentCandles[i].low);
+        }
+        const avgRange = ranges.reduce((sum, range) => sum + range, 0) / ranges.length;
+        
+        // Волатильность как процент от цены
+        const lastPrice = closes[closes.length - 1];
+        volatility = (avgRange / lastPrice) * 100;
+        
+        // Расчет силы тренда
+        const firstPrice = closes[0];
+        const priceChange = (lastPrice - firstPrice) / firstPrice * 100;
+        trendStrength = Math.min(Math.abs(priceChange) / 10, 1); // Нормализуем до 0-1
+        
+        // Расчет соотношения объема
+        const volumes = recentCandles.map(c => c.volume);
+        const avgVolume = volumes.reduce((sum, vol) => sum + vol, 0) / volumes.length;
+        const lastVolume = volumes[volumes.length - 1];
+        volumeRatio = lastVolume / avgVolume;
+        
+        // Определение типа рынка
+        const volatilityThreshold = this.config.autoSwitching.volatilityThreshold;
+        const trendStrengthThreshold = this.config.autoSwitching.trendStrengthThreshold;
+        
+        if (trendStrength > trendStrengthThreshold) {
+          marketType = 'TRENDING';
+          recommendedStrategy = 'DCA';
+        } else if (volatility > volatilityThreshold) {
+          marketType = 'VOLATILE';
+          recommendedStrategy = 'SCALPING';
+        } else {
+          marketType = 'RANGING';
+          recommendedStrategy = 'SCALPING';
+        }
+      }
       
       // Обновляем данные последнего анализа рынка
       this.stats.lastMarketAnalysis = {
         timestamp: Date.now(),
-        recommendedStrategy: marketAnalysis.recommendedStrategy,
-        marketType: marketAnalysis.marketType,
-        volatility: marketAnalysis.volatility,
-        volumeRatio: marketAnalysis.volumeRatio,
-        trendStrength: marketAnalysis.trendStrength,
-        confidence: marketAnalysis.confidence
+        recommendedStrategy,
+        marketType,
+        volatility,
+        volumeRatio,
+        trendStrength,
+        confidence: 0.7
       };
       
       // Если активен автоматический выбор стратегии, применяем рекомендуемую
       if (this.config.activeStrategy === 'AUTO') {
-        const newStrategy = marketAnalysis.recommendedStrategy;
-        
-        if (newStrategy === 'SCALPING') {
+        if (recommendedStrategy === 'SCALPING') {
           this.currentStrategy = this.scalping;
         } else {
           this.currentStrategy = this.dcaStrategy;
         }
         
-        this.logger.log(`[Bot ${this.symbol}] Auto-switched strategy to ${newStrategy}`);
-        this.stats.activeStrategy = newStrategy;
+        this.logger.log(`[Bot ${this.symbol}] Auto-switched strategy to ${recommendedStrategy}`);
+        this.stats.activeStrategy = recommendedStrategy;
       }
       
       // Обновляем настройки анализатора сигналов в зависимости от рыночных условий
-      this.updateSignalSettingsBasedOnMarket(marketAnalysis);
+      this.updateSignalSettingsBasedOnMarket({
+        marketType,
+        volatility,
+        volumeRatio,
+        trendStrength
+      });
       
       return this.stats.activeStrategy;
     } catch (error) {
@@ -1108,7 +1179,6 @@ class Bot {
     // Обновляем стратегии
     this.scalping.updateConfig(this.config.scalping);
     this.dcaStrategy.updateConfig(this.config.dca);
-    this.autoSwitchingStrategy.updateConfig(this.config.autoSwitching);
     
     // Если стратегия изменилась, обновляем активную стратегию
     if (newConfig.activeStrategy && newConfig.activeStrategy !== currentStrategy) {
