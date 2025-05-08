@@ -2,10 +2,12 @@
 const Trade = require('../api/models/Trade');
 const ScalpingStrategy = require('./strategies/ScalpingStrategy');
 const DCAStrategy = require('./strategies/DCAStrategy');
-const SignalAnalyzer = require('./SignalAnalyzer');
+const SignalAnalyzer = require('./SignalAnalyzer');  // Исправленный путь импорта
 const SignalSettings = require('../api/models/SignalSettings');
 
- 
+/**
+ * Класс торгового бота BitGet
+ */
 class Bot {
   /**
    * Конструктор бота
@@ -121,6 +123,67 @@ class Bot {
       autoSwitching: { ...defaultConfig.autoSwitching, ...(config.autoSwitching || {}) },
       activeStrategy: config.activeStrategy || defaultConfig.activeStrategy
     };
+  }
+
+  /**
+   * Инициализация бота
+   * @returns {Promise<boolean>} - Успешность инициализации
+   */
+  async initialize() {
+    try {
+      this.logger.log(`Initializing bot for ${this.symbol}...`);
+      
+      // Установка плеча для торговли
+      if (this.config.common.leverage > 1) {
+        try {
+          await this.api.setLeverage(this.symbol, this.config.common.leverage);
+          this.logger.log(`Leverage set to ${this.config.common.leverage}x for ${this.symbol}`);
+        } catch (leverageError) {
+          this.logger.error(`Failed to set leverage for ${this.symbol}:`, leverageError);
+          // Продолжаем инициализацию, даже если не смогли установить плечо
+        }
+      }
+      
+      // Загрузка исторических данных для первоначального анализа
+      try {
+        const klines = await this.api.getKlines(this.symbol, '1h', 100);
+        
+        if (klines && klines.data && Array.isArray(klines.data)) {
+          const candles = klines.data.map(candle => ({
+            time: parseInt(candle[0]),
+            open: parseFloat(candle[1]),
+            high: parseFloat(candle[2]),
+            low: parseFloat(candle[3]),
+            close: parseFloat(candle[4]),
+            volume: parseFloat(candle[5])
+          }));
+          
+          // Первоначальный анализ рынка
+          const indicatorValues = await this.signalAnalyzer.getIndicatorValues(candles);
+          const marketConditions = await this.signalAnalyzer.getMarketConditions();
+          
+          // Обновляем данные о рынке
+          this.stats.lastMarketAnalysis = {
+            timestamp: Date.now(),
+            recommendedStrategy: marketConditions.marketType === 'TRENDING' ? 'DCA' : 'SCALPING',
+            marketType: marketConditions.marketType,
+            volatility: marketConditions.volatility || 0,
+            volumeRatio: marketConditions.volumeRatio || 1.0,
+            trendStrength: marketConditions.trendStrength || 0.5,
+            confidence: 0.7
+          };
+        }
+      } catch (dataError) {
+        this.logger.error(`Error loading initial market data for ${this.symbol}:`, dataError);
+        // Продолжаем инициализацию без исторических данных
+      }
+      
+      this.logger.log(`Bot initialized for ${this.symbol}`);
+      return true;
+    } catch (error) {
+      this.logger.error(`Failed to initialize bot for ${this.symbol}:`, error);
+      return false;
+    }
   }
 
   /**

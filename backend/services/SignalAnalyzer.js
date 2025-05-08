@@ -53,52 +53,63 @@ class SignalAnalyzer {
       };
     }
     
-    // Получаем значения индикаторов
-    const indicatorValues = await this.calculateIndicators(candles, settings.indicators);
-    
-    // Оценка рыночных условий
-    const marketConditions = await this.evaluateMarketConditions(candles, indicatorValues, settings.marketFilters);
-    
-    // Результаты анализа
-    const result = {
-      shouldEnter: false,
-      shouldExit: false,
-      direction: null,
-      confidence: 0,
-      indicators: indicatorValues,
-      marketConditions
-    };
-    
-    // Проверяем, есть ли активная позиция
-    const hasPosition = marketData.position != null;
-    
-    if (hasPosition) {
-      // Анализ для выхода из позиции
-      result.shouldExit = await this.analyzeExitSignals(currentPrice, marketData, indicatorValues, settings);
-      result.exitReason = this.getExitReason(currentPrice, marketData, indicatorValues, settings);
-    } else {
-      // Анализ для входа в позицию
-      const entrySignal = await this.analyzeEntrySignals(currentPrice, marketData, indicatorValues, settings);
-      result.shouldEnter = entrySignal.shouldEnter;
-      result.direction = entrySignal.direction;
-      result.confidence = entrySignal.confidence;
-      result.reason = entrySignal.reason;
+    try {
+      // Получаем значения индикаторов
+      const indicatorValues = await this.calculateIndicators(candles, settings.indicators);
       
-      // Расчет уровней TP/SL
-      if (result.shouldEnter) {
-        result.takeProfitPrice = this.calculateTakeProfitLevel(currentPrice, result.direction, settings);
-        result.stopLossPrice = this.calculateStopLossLevel(currentPrice, result.direction, settings);
+      // Оценка рыночных условий
+      const marketConditions = await this.evaluateMarketConditions(candles, indicatorValues, settings.marketFilters);
+      
+      // Результаты анализа
+      const result = {
+        shouldEnter: false,
+        shouldExit: false,
+        direction: null,
+        confidence: 0,
+        indicators: indicatorValues,
+        marketConditions
+      };
+      
+      // Проверяем, есть ли активная позиция
+      const hasPosition = marketData.position != null;
+      
+      if (hasPosition) {
+        // Анализ для выхода из позиции
+        result.shouldExit = await this.analyzeExitSignals(currentPrice, marketData, indicatorValues, settings);
+        result.exitReason = this.getExitReason(currentPrice, marketData, indicatorValues, settings);
+      } else {
+        // Анализ для входа в позицию
+        const entrySignal = await this.analyzeEntrySignals(currentPrice, marketData, indicatorValues, settings);
+        result.shouldEnter = entrySignal.shouldEnter;
+        result.direction = entrySignal.direction;
+        result.confidence = entrySignal.confidence;
+        result.reason = entrySignal.reason;
+        
+        // Расчет уровней TP/SL
+        if (result.shouldEnter) {
+          result.takeProfitPrice = this.calculateTakeProfitLevel(currentPrice, result.direction, settings);
+          result.stopLossPrice = this.calculateStopLossLevel(currentPrice, result.direction, settings);
+        }
       }
+      
+      // Сохраняем результат анализа для дальнейшего использования
+      this.lastAnalysis = {
+        price: currentPrice,
+        timestamp: Date.now(),
+        result
+      };
+      
+      return result;
+    } catch (error) {
+      console.error(`Error in analyzeSignals for ${this.symbol}:`, error);
+      return {
+        shouldEnter: false,
+        shouldExit: false,
+        direction: null,
+        confidence: 0,
+        reason: `Error analyzing signals: ${error.message}`
+      };
     }
-    
-    // Сохраняем результат анализа для дальнейшего использования
-    this.lastAnalysis = {
-      price: currentPrice,
-      timestamp: Date.now(),
-      result
-    };
-    
-    return result;
   }
 
   /**
@@ -108,93 +119,98 @@ class SignalAnalyzer {
    * @returns {Promise<Object>} - Значения индикаторов
    */
   async calculateIndicators(candles, indicatorSettings) {
-    const result = {};
-    
-    // Получаем массивы цен
-    const closes = candles.map(c => c.close);
-    const highs = candles.map(c => c.high);
-    const lows = candles.map(c => c.low);
-    const volumes = candles.map(c => c.volume);
-    
-    // Расчет RSI
-    if (indicatorSettings.rsi && indicatorSettings.rsi.enabled) {
-      const period = indicatorSettings.rsi.period || 14;
-      result.rsi = this.calculateRSI(closes, period);
-    }
-    
-    // Расчет MACD
-    if (indicatorSettings.macd && indicatorSettings.macd.enabled) {
-      const fastPeriod = indicatorSettings.macd.fastPeriod || 12;
-      const slowPeriod = indicatorSettings.macd.slowPeriod || 26;
-      const signalPeriod = indicatorSettings.macd.signalPeriod || 9;
-      result.macd = this.calculateMACD(closes, fastPeriod, slowPeriod, signalPeriod);
-    }
-    
-    // Расчет полос Боллинджера
-    if (indicatorSettings.bollinger && indicatorSettings.bollinger.enabled) {
-      const period = indicatorSettings.bollinger.period || 20;
-      const deviation = indicatorSettings.bollinger.deviation || 2;
-      result.bollinger = this.calculateBollingerBands(closes, period, deviation);
-    }
-    
-    // Расчет скользящих средних
-    if (indicatorSettings.ma && indicatorSettings.ma.enabled) {
-      const fastPeriod = indicatorSettings.ma.fastPeriod || 10;
-      const slowPeriod = indicatorSettings.ma.slowPeriod || 50;
-      const type = indicatorSettings.ma.type || 'EMA';
+    try {
+      const result = {};
       
-      if (type === 'SMA') {
-        result.ma = {
-          fast: this.calculateSMA(closes, fastPeriod),
-          slow: this.calculateSMA(closes, slowPeriod),
-          crossover: false,
-          direction: null
-        };
-      } else if (type === 'EMA') {
-        result.ma = {
-          fast: this.calculateEMA(closes, fastPeriod),
-          slow: this.calculateEMA(closes, slowPeriod),
-          crossover: false,
-          direction: null
-        };
-      } else if (type === 'WMA') {
-        result.ma = {
-          fast: this.calculateWMA(closes, fastPeriod),
-          slow: this.calculateWMA(closes, slowPeriod),
-          crossover: false,
-          direction: null
-        };
+      // Получаем массивы цен
+      const closes = candles.map(c => c.close);
+      const highs = candles.map(c => c.high);
+      const lows = candles.map(c => c.low);
+      const volumes = candles.map(c => c.volume);
+      
+      // Расчет RSI
+      if (indicatorSettings && indicatorSettings.rsi && indicatorSettings.rsi.enabled) {
+        const period = indicatorSettings.rsi.period || 14;
+        result.rsi = this.calculateRSI(closes, period);
       }
       
-      // Проверка на пересечение
-      if (result.ma.fast.length > 1 && result.ma.slow.length > 1) {
-        const fastLast = result.ma.fast[result.ma.fast.length - 1];
-        const fastPrev = result.ma.fast[result.ma.fast.length - 2];
-        const slowLast = result.ma.slow[result.ma.slow.length - 1];
-        const slowPrev = result.ma.slow[result.ma.slow.length - 2];
-        
-        // Определяем, было ли пересечение
-        const crossUp = fastPrev < slowPrev && fastLast > slowLast;
-        const crossDown = fastPrev > slowPrev && fastLast < slowLast;
-        
-        result.ma.crossover = crossUp || crossDown;
-        result.ma.direction = crossUp ? 'UP' : (crossDown ? 'DOWN' : null);
+      // Расчет MACD
+      if (indicatorSettings && indicatorSettings.macd && indicatorSettings.macd.enabled) {
+        const fastPeriod = indicatorSettings.macd.fastPeriod || 12;
+        const slowPeriod = indicatorSettings.macd.slowPeriod || 26;
+        const signalPeriod = indicatorSettings.macd.signalPeriod || 9;
+        result.macd = this.calculateMACD(closes, fastPeriod, slowPeriod, signalPeriod);
       }
+      
+      // Расчет полос Боллинджера
+      if (indicatorSettings && indicatorSettings.bollinger && indicatorSettings.bollinger.enabled) {
+        const period = indicatorSettings.bollinger.period || 20;
+        const deviation = indicatorSettings.bollinger.deviation || 2;
+        result.bollinger = this.calculateBollingerBands(closes, period, deviation);
+      }
+      
+      // Расчет скользящих средних
+      if (indicatorSettings && indicatorSettings.ma && indicatorSettings.ma.enabled) {
+        const fastPeriod = indicatorSettings.ma.fastPeriod || 10;
+        const slowPeriod = indicatorSettings.ma.slowPeriod || 50;
+        const type = indicatorSettings.ma.type || 'EMA';
+        
+        if (type === 'SMA') {
+          result.ma = {
+            fast: this.calculateSMA(closes, fastPeriod),
+            slow: this.calculateSMA(closes, slowPeriod),
+            crossover: false,
+            direction: null
+          };
+        } else if (type === 'EMA') {
+          result.ma = {
+            fast: this.calculateEMA(closes, fastPeriod),
+            slow: this.calculateEMA(closes, slowPeriod),
+            crossover: false,
+            direction: null
+          };
+        } else if (type === 'WMA') {
+          result.ma = {
+            fast: this.calculateWMA(closes, fastPeriod),
+            slow: this.calculateWMA(closes, slowPeriod),
+            crossover: false,
+            direction: null
+          };
+        }
+        
+        // Проверка на пересечение
+        if (result.ma.fast.length > 1 && result.ma.slow.length > 1) {
+          const fastLast = result.ma.fast[result.ma.fast.length - 1];
+          const fastPrev = result.ma.fast[result.ma.fast.length - 2];
+          const slowLast = result.ma.slow[result.ma.slow.length - 1];
+          const slowPrev = result.ma.slow[result.ma.slow.length - 2];
+          
+          // Определяем, было ли пересечение
+          const crossUp = fastPrev < slowPrev && fastLast > slowLast;
+          const crossDown = fastPrev > slowPrev && fastLast < slowLast;
+          
+          result.ma.crossover = crossUp || crossDown;
+          result.ma.direction = crossUp ? 'UP' : (crossDown ? 'DOWN' : null);
+        }
+      }
+      
+      // Расчет трендовых индикаторов
+      result.trend = this.calculateTrend(closes, highs, lows);
+      
+      // Расчет импульса
+      result.momentum = this.calculateMomentum(closes);
+      
+      // Расчет волатильности
+      result.volatility = this.calculateVolatility(highs, lows, closes);
+      
+      // Расчет объема
+      result.volume = this.analyzeVolume(volumes, closes);
+      
+      return result;
+    } catch (error) {
+      console.error(`Error in calculateIndicators for ${this.symbol}:`, error);
+      return {};
     }
-    
-    // Расчет трендовых индикаторов
-    result.trend = this.calculateTrend(closes, highs, lows);
-    
-    // Расчет импульса
-    result.momentum = this.calculateMomentum(closes);
-    
-    // Расчет волатильности
-    result.volatility = this.calculateVolatility(highs, lows, closes);
-    
-    // Расчет объема
-    result.volume = this.analyzeVolume(volumes, closes);
-    
-    return result;
   }
 
   /**
@@ -490,8 +506,8 @@ class SignalAnalyzer {
     const x = Array.from({ length: n }, (_, i) => i);
     
     // Расчет среднего значения
-    const meanX = x.reduce((sum, val) => sum + val, 0) / n;
-    const meanY = closes.reduce((sum, val) => sum + val, 0) / n;
+    const meanX = x.reduce((sum, x) => sum + x, 0) / n;
+    const meanY = closes.reduce((sum, y) => sum + y, 0) / n;
     
     // Расчет коэффициентов линейной регрессии
     let numerator = 0;
@@ -512,7 +528,8 @@ class SignalAnalyzer {
     
     // Сила тренда (0-1)
     // Нормализуем наклон относительно средней цены
-    const normalizedSlope = Math.abs(slope) / (meanY / 100);
+    const maxPossibleSlope = Math.max(...closes) - Math.min(...closes);
+    const normalizedSlope = maxPossibleSlope > 0 ? Math.abs(slope) / maxPossibleSlope : 0;
     const strength = Math.min(normalizedSlope, 1);
     
     // Дополнительные проверки для подтверждения тренда
@@ -732,119 +749,131 @@ class SignalAnalyzer {
    * @param {Array} candles - Исторические свечи
    * @param {Object} indicatorValues - Значения индикаторов
    * @param {Object} filterSettings - Настройки фильтров рынка
-   * @returns {Object} - Результат оценки рыночных условий
+   * @returns {Promise<Object>} - Результат оценки рыночных условий
    */
   async evaluateMarketConditions(candles, indicatorValues, filterSettings) {
-    // Определение типа рынка на основе индикаторов
-    let marketType = 'UNKNOWN';
-    let marketScore = {
-      trending: 0,
-      ranging: 0,
-      volatile: 0
-    };
-    
-    // Учет тренда
-    if (indicatorValues.trend) {
-      if (indicatorValues.trend.strength > 0.7) {
-        marketScore.trending += 2;
-      } else if (indicatorValues.trend.strength > 0.4) {
-        marketScore.trending += 1;
+    try {
+      // Определение типа рынка на основе индикаторов
+      let marketType = 'UNKNOWN';
+      let marketScore = {
+        trending: 0,
+        ranging: 0,
+        volatile: 0
+      };
+      
+      // Учет тренда
+      if (indicatorValues.trend) {
+        if (indicatorValues.trend.strength > 0.7) {
+          marketScore.trending += 2;
+        } else if (indicatorValues.trend.strength > 0.4) {
+          marketScore.trending += 1;
+        }
+        
+        if (indicatorValues.trend.direction === 'NEUTRAL') {
+          marketScore.ranging += 1;
+        }
       }
       
-      if (indicatorValues.trend.direction === 'NEUTRAL') {
-        marketScore.ranging += 1;
-      }
-    }
-    
-    // Учет волатильности
-    if (indicatorValues.volatility) {
-      if (indicatorValues.volatility.isHigh) {
-        marketScore.volatile += 2;
-        marketScore.trending -= 1;
-      } else {
-        marketScore.ranging += 1;
-      }
-      
-      if (indicatorValues.volatility.relativeVolatility > 1.5) {
-        marketScore.volatile += 1;
-      } else if (indicatorValues.volatility.relativeVolatility < 0.7) {
-        marketScore.ranging += 1;
-      }
-    }
-    
-    // Учет Боллинджера
-    if (indicatorValues.bollinger) {
-      if (indicatorValues.bollinger.isNarrow) {
-        marketScore.ranging += 2;
-        marketScore.volatile -= 1;
+      // Учет волатильности
+      if (indicatorValues.volatility) {
+        if (indicatorValues.volatility.isHigh) {
+          marketScore.volatile += 2;
+          marketScore.trending -= 1;
+        } else {
+          marketScore.ranging += 1;
+        }
+        
+        if (indicatorValues.volatility.relativeVolatility > 1.5) {
+          marketScore.volatile += 1;
+        } else if (indicatorValues.volatility.relativeVolatility < 0.7) {
+          marketScore.ranging += 1;
+        }
       }
       
-      if (indicatorValues.bollinger.isAboveUpper || indicatorValues.bollinger.isBelowLower) {
-        marketScore.volatile += 1;
-      }
-    }
-    
-    // Учет импульса
-    if (indicatorValues.momentum) {
-      if (indicatorValues.momentum.isStrong) {
-        marketScore.trending += 1;
-      }
-      
-      if (Math.abs(indicatorValues.momentum.acceleration) > 2) {
-        marketScore.volatile += 1;
-      } else if (Math.abs(indicatorValues.momentum.acceleration) < 0.5) {
-        marketScore.ranging += 1;
-      }
-    }
-    
-    // Определение типа рынка на основе оценок
-    if (marketScore.trending > marketScore.ranging && marketScore.trending > marketScore.volatile) {
-      marketType = 'TRENDING';
-    } else if (marketScore.ranging > marketScore.trending && marketScore.ranging > marketScore.volatile) {
-      marketType = 'RANGING';
-    } else if (marketScore.volatile > marketScore.trending && marketScore.volatile > marketScore.ranging) {
-      marketType = 'VOLATILE';
-    }
-    
-    // Расчет волатильности рынка
-    let volatility = indicatorValues.volatility ? indicatorValues.volatility.value : 0;
-    
-    // Расчет соотношения объема
-    let volumeRatio = indicatorValues.volume ? indicatorValues.volume.ratio : 1;
-    
-    // Расчет силы тренда
-    let trendStrength = indicatorValues.trend ? indicatorValues.trend.strength : 0;
-    
-    // Проверка фильтров рынка
-    let passesFilters = true;
-    
-    if (filterSettings) {
-      // Фильтр по высокой волатильности
-      if (filterSettings.avoidHighVolatility && indicatorValues.volatility && indicatorValues.volatility.isHigh) {
-        passesFilters = false;
+      // Учет Боллинджера
+      if (indicatorValues.bollinger) {
+        if (indicatorValues.bollinger.isNarrow) {
+          marketScore.ranging += 2;
+          marketScore.volatile -= 1;
+        }
+        
+        if (indicatorValues.bollinger.isAboveUpper || indicatorValues.bollinger.isBelowLower) {
+          marketScore.volatile += 1;
+        }
       }
       
-      // Фильтр по низкой ликвидности
-      if (filterSettings.avoidLowLiquidity && indicatorValues.volume && indicatorValues.volume.ratio < 0.5) {
-        passesFilters = false;
+      // Учет импульса
+      if (indicatorValues.momentum) {
+        if (indicatorValues.momentum.isStrong) {
+          marketScore.trending += 1;
+        }
+        
+        if (Math.abs(indicatorValues.momentum.acceleration) > 2) {
+          marketScore.volatile += 1;
+        } else if (Math.abs(indicatorValues.momentum.acceleration) < 0.5) {
+          marketScore.ranging += 1;
+        }
       }
       
-      // Фильтр по предпочтительным типам рынка
-      if (filterSettings.preferredMarketTypes && 
-          filterSettings.preferredMarketTypes.length > 0 && 
-          !filterSettings.preferredMarketTypes.includes(marketType)) {
-        passesFilters = false;
+      // Определение типа рынка на основе оценок
+      if (marketScore.trending > marketScore.ranging && marketScore.trending > marketScore.volatile) {
+        marketType = 'TRENDING';
+      } else if (marketScore.ranging > marketScore.trending && marketScore.ranging > marketScore.volatile) {
+        marketType = 'RANGING';
+      } else if (marketScore.volatile > marketScore.trending && marketScore.volatile > marketScore.ranging) {
+        marketType = 'VOLATILE';
       }
+      
+      // Расчет волатильности рынка
+      let volatility = indicatorValues.volatility ? indicatorValues.volatility.value : 0;
+      
+      // Расчет соотношения объема
+      let volumeRatio = indicatorValues.volume ? indicatorValues.volume.ratio : 1;
+      
+      // Расчет силы тренда
+      let trendStrength = indicatorValues.trend ? indicatorValues.trend.strength : 0;
+      
+      // Проверка фильтров рынка
+      let passesFilters = true;
+      
+      if (filterSettings) {
+        // Фильтр по высокой волатильности
+        if (filterSettings.avoidHighVolatility && indicatorValues.volatility && indicatorValues.volatility.isHigh) {
+          passesFilters = false;
+        }
+        
+        // Фильтр по низкой ликвидности
+        if (filterSettings.avoidLowLiquidity && indicatorValues.volume && indicatorValues.volume.ratio < 0.5) {
+          passesFilters = false;
+        }
+        
+        // Фильтр по предпочтительным типам рынка
+        if (filterSettings.preferredMarketTypes && 
+            filterSettings.preferredMarketTypes.length > 0 && 
+            !filterSettings.preferredMarketTypes.includes(marketType)) {
+          passesFilters = false;
+        }
+      }
+      
+      return {
+        marketType,
+        volatility,
+        volumeRatio,
+        trendStrength,
+        passesFilters,
+        score: marketScore
+      };
+    } catch (error) {
+      console.error(`Error in evaluateMarketConditions for ${this.symbol}:`, error);
+      return {
+        marketType: 'UNKNOWN',
+        volatility: 0,
+        volumeRatio: 1,
+        trendStrength: 0,
+        passesFilters: true,
+        score: { trending: 0, ranging: 0, volatile: 0 }
+      };
     }
-    
-    return {
-      marketType,
-      volatility,
-      volumeRatio,
-      trendStrength,
-      passesFilters,
-      score: marketScore
-    };
   }
 
   /**
@@ -853,160 +882,170 @@ class SignalAnalyzer {
    * @param {Object} marketData - Данные рынка
    * @param {Object} indicatorValues - Значения индикаторов
    * @param {Object} settings - Настройки анализа сигналов
-   * @returns {Object} - Результат анализа сигналов на вход
+   * @returns {Promise<Object>} - Результат анализа сигналов на вход
    */
   async analyzeEntrySignals(currentPrice, marketData, indicatorValues, settings) {
-    // Результат по умолчанию - нет сигнала
-    const result = {
-      shouldEnter: false,
-      direction: null,
-      confidence: 0,
-      reason: 'No signal'
-    };
-    
-    // Проверка рыночных условий
-    const marketConditions = marketData.marketConditions || 
-                           await this.evaluateMarketConditions(
-                             marketData.recentCandles, 
-                             indicatorValues, 
-                             settings.marketFilters
-                           );
-    
-    // Если не проходит фильтры рынка, отклоняем сигнал
-    if (!marketConditions.passesFilters) {
-      result.reason = 'Market conditions do not pass filters';
-      return result;
-    }
-    
-    // Определение направления на основе тренда (если включено)
-    let direction = null;
-    if (settings.entryConditions.useTrendDetection) {
-      // Требуем минимальную силу тренда
-      if (indicatorValues.trend && 
-          indicatorValues.trend.strength >= settings.entryConditions.minTrendStrength) {
-        if (indicatorValues.trend.direction === 'UP') {
-          direction = 'LONG';
-        } else if (indicatorValues.trend.direction === 'DOWN') {
-          direction = 'SHORT';
-        }
+    try {
+      // Результат по умолчанию - нет сигнала
+      const result = {
+        shouldEnter: false,
+        direction: null,
+        confidence: 0,
+        reason: 'No signal'
+      };
+      
+      // Проверка рыночных условий
+      const marketConditions = marketData.marketConditions || 
+                             await this.evaluateMarketConditions(
+                               marketData.recentCandles, 
+                               indicatorValues, 
+                               settings.marketFilters
+                             );
+      
+      // Если не проходит фильтры рынка, отклоняем сигнал
+      if (!marketConditions.passesFilters) {
+        result.reason = 'Market conditions do not pass filters';
+        return result;
       }
       
-      // Если разрешена торговля против тренда, меняем направление в определенных условиях
-      if (direction && settings.entryConditions.allowCounterTrend) {
-        // Например, при перепроданности/перекупленности в RSI
-        if (indicatorValues.rsi) {
-          if (direction === 'LONG' && indicatorValues.rsi.isOverbought) {
-            direction = 'SHORT';
-          } else if (direction === 'SHORT' && indicatorValues.rsi.isOversold) {
+      // Определение направления на основе тренда (если включено)
+      let direction = null;
+      if (settings.entryConditions && settings.entryConditions.useTrendDetection) {
+        // Требуем минимальную силу тренда
+        if (indicatorValues.trend && 
+            indicatorValues.trend.strength >= settings.entryConditions.minTrendStrength) {
+          if (indicatorValues.trend.direction === 'UP') {
             direction = 'LONG';
+          } else if (indicatorValues.trend.direction === 'DOWN') {
+            direction = 'SHORT';
+          }
+        }
+        
+        // Если разрешена торговля против тренда, меняем направление в определенных условиях
+        if (direction && settings.entryConditions.allowCounterTrend) {
+          // Например, при перепроданности/перекупленности в RSI
+          if (indicatorValues.rsi) {
+            if (direction === 'LONG' && indicatorValues.rsi.isOverbought) {
+              direction = 'SHORT';
+            } else if (direction === 'SHORT' && indicatorValues.rsi.isOversold) {
+              direction = 'LONG';
+            }
           }
         }
       }
-    }
-    
-    // Если направление не определено, используем другие индикаторы
-    if (!direction) {
-      // Используем MA-кроссовер
-      if (indicatorValues.ma && indicatorValues.ma.crossover) {
-        direction = indicatorValues.ma.direction === 'UP' ? 'LONG' : 'SHORT';
-      }
-      // Используем MACD-кроссовер
-      else if (indicatorValues.macd && indicatorValues.macd.crossover) {
-        direction = indicatorValues.macd.direction === 'UP' ? 'LONG' : 'SHORT';
-      }
-      // Используем RSI
-      else if (indicatorValues.rsi) {
-        if (indicatorValues.rsi.isOversold) {
-          direction = 'LONG';
-        } else if (indicatorValues.rsi.isOverbought) {
-          direction = 'SHORT';
+      
+      // Если направление не определено, используем другие индикаторы
+      if (!direction) {
+        // Используем MA-кроссовер
+        if (indicatorValues.ma && indicatorValues.ma.crossover) {
+          direction = indicatorValues.ma.direction === 'UP' ? 'LONG' : 'SHORT';
+        }
+        // Используем MACD-кроссовер
+        else if (indicatorValues.macd && indicatorValues.macd.crossover) {
+          direction = indicatorValues.macd.direction === 'UP' ? 'LONG' : 'SHORT';
+        }
+        // Используем RSI
+        else if (indicatorValues.rsi) {
+          if (indicatorValues.rsi.isOversold) {
+            direction = 'LONG';
+          } else if (indicatorValues.rsi.isOverbought) {
+            direction = 'SHORT';
+          }
         }
       }
-    }
-    
-    // Если направление все еще не определено, выходим
-    if (!direction) {
-      result.reason = 'Direction could not be determined';
+      
+      // Если направление все еще не определено, выходим
+      if (!direction) {
+        result.reason = 'Direction could not be determined';
+        return result;
+      }
+      
+      // Подсчет количества подтверждающих индикаторов
+      let confirmations = 0;
+      let confirmationsRequired = settings.general && settings.general.confirmationRequired ? settings.general.confirmationRequired : 2;
+      let confidenceScore = 0;
+      
+      // RSI
+      if (indicatorValues.rsi && settings.indicators && settings.indicators.rsi) {
+        if ((direction === 'LONG' && indicatorValues.rsi.isOversold) ||
+            (direction === 'SHORT' && indicatorValues.rsi.isOverbought)) {
+          confirmations++;
+          confidenceScore += settings.indicators.rsi.weight || 1;
+        }
+      }
+      
+      // MACD
+      if (indicatorValues.macd && settings.indicators && settings.indicators.macd) {
+        if ((direction === 'LONG' && indicatorValues.macd.direction === 'UP') ||
+            (direction === 'SHORT' && indicatorValues.macd.direction === 'DOWN')) {
+          confirmations++;
+          confidenceScore += settings.indicators.macd.weight || 1;
+        }
+      }
+      
+      // Боллинджер
+      if (indicatorValues.bollinger && settings.indicators && settings.indicators.bollinger) {
+        if ((direction === 'LONG' && indicatorValues.bollinger.isBelowLower) ||
+            (direction === 'SHORT' && indicatorValues.bollinger.isAboveUpper)) {
+          confirmations++;
+          confidenceScore += settings.indicators.bollinger.weight || 1;
+        }
+      }
+      
+      // MA
+      if (indicatorValues.ma && settings.indicators && settings.indicators.ma) {
+        if ((direction === 'LONG' && indicatorValues.ma.direction === 'UP') ||
+            (direction === 'SHORT' && indicatorValues.ma.direction === 'DOWN')) {
+          confirmations++;
+          confidenceScore += settings.indicators.ma.weight || 1;
+        }
+      }
+      
+      // Подтверждение объемом
+      if (settings.entryConditions && settings.entryConditions.requireVolumeConfirmation && 
+          indicatorValues.volume && 
+          indicatorValues.volume.trendConfirmation) {
+        if ((direction === 'LONG' && indicatorValues.volume.isPositive) ||
+            (direction === 'SHORT' && !indicatorValues.volume.isPositive)) {
+          confirmations++;
+          confidenceScore += 1;
+        }
+      }
+      
+      // Принятие решения на основе подтверждений и чувствительности
+      const sensitivity = settings.general && settings.general.sensitivity ? settings.general.sensitivity / 100 : 0.5; // Преобразуем в 0-1
+      
+      if (confirmations >= confirmationsRequired) {
+        result.shouldEnter = true;
+        result.direction = direction;
+        result.reason = `Signal confirmed by ${confirmations} indicators`;
+        
+        // Расчет уверенности (0-1)
+        result.confidence = Math.min(confidenceScore / (confirmationsRequired * 2), 1) * sensitivity;
+        
+        // Корректировка уверенности на основе рыночных условий
+        if (marketConditions.marketType === 'TRENDING' && 
+            ((direction === 'LONG' && indicatorValues.trend && indicatorValues.trend.direction === 'UP') ||
+             (direction === 'SHORT' && indicatorValues.trend && indicatorValues.trend.direction === 'DOWN'))) {
+          result.confidence *= 1.2; // Повышаем уверенность при совпадении с трендом
+        } else if (marketConditions.marketType === 'VOLATILE') {
+          result.confidence *= 0.8; // Снижаем уверенность на волатильном рынке
+        }
+        
+        // Рассчитываем размер позиции на основе уверенности
+        result.entrySize = this.calculatePositionSize(currentPrice, result.confidence, settings);
+      }
+      
       return result;
+    } catch (error) {
+      console.error(`Error in analyzeEntrySignals for ${this.symbol}:`, error);
+      return {
+        shouldEnter: false,
+        direction: null,
+        confidence: 0,
+        reason: `Error analyzing entry signals: ${error.message}`
+      };
     }
-    
-    // Подсчет количества подтверждающих индикаторов
-    let confirmations = 0;
-    let confirmationsRequired = settings.general.confirmationRequired || 2;
-    let confidenceScore = 0;
-    
-    // RSI
-    if (indicatorValues.rsi) {
-      if ((direction === 'LONG' && indicatorValues.rsi.isOversold) ||
-          (direction === 'SHORT' && indicatorValues.rsi.isOverbought)) {
-        confirmations++;
-        confidenceScore += settings.indicators.rsi.weight;
-      }
-    }
-    
-    // MACD
-    if (indicatorValues.macd) {
-      if ((direction === 'LONG' && indicatorValues.macd.direction === 'UP') ||
-          (direction === 'SHORT' && indicatorValues.macd.direction === 'DOWN')) {
-        confirmations++;
-        confidenceScore += settings.indicators.macd.weight;
-      }
-    }
-    
-    // Боллинджер
-    if (indicatorValues.bollinger) {
-      if ((direction === 'LONG' && indicatorValues.bollinger.isBelowLower) ||
-          (direction === 'SHORT' && indicatorValues.bollinger.isAboveUpper)) {
-        confirmations++;
-        confidenceScore += settings.indicators.bollinger.weight;
-      }
-    }
-    
-    // MA
-    if (indicatorValues.ma) {
-      if ((direction === 'LONG' && indicatorValues.ma.direction === 'UP') ||
-          (direction === 'SHORT' && indicatorValues.ma.direction === 'DOWN')) {
-        confirmations++;
-        confidenceScore += settings.indicators.ma.weight;
-      }
-    }
-    
-    // Подтверждение объемом
-    if (settings.entryConditions.requireVolumeConfirmation && 
-        indicatorValues.volume && 
-        indicatorValues.volume.trendConfirmation) {
-      if ((direction === 'LONG' && indicatorValues.volume.isPositive) ||
-          (direction === 'SHORT' && !indicatorValues.volume.isPositive)) {
-        confirmations++;
-        confidenceScore += 1;
-      }
-    }
-    
-    // Принятие решения на основе подтверждений и чувствительности
-    const sensitivity = settings.general.sensitivity / 100; // Преобразуем в 0-1
-    
-    if (confirmations >= confirmationsRequired) {
-      result.shouldEnter = true;
-      result.direction = direction;
-      result.reason = `Signal confirmed by ${confirmations} indicators`;
-      
-      // Расчет уверенности (0-1)
-      result.confidence = Math.min(confidenceScore / (confirmationsRequired * 2), 1) * sensitivity;
-      
-      // Корректировка уверенности на основе рыночных условий
-      if (marketConditions.marketType === 'TRENDING' && 
-          ((direction === 'LONG' && indicatorValues.trend && indicatorValues.trend.direction === 'UP') ||
-           (direction === 'SHORT' && indicatorValues.trend && indicatorValues.trend.direction === 'DOWN'))) {
-        result.confidence *= 1.2; // Повышаем уверенность при совпадении с трендом
-      } else if (marketConditions.marketType === 'VOLATILE') {
-        result.confidence *= 0.8; // Снижаем уверенность на волатильном рынке
-      }
-      
-      // Рассчитываем размер позиции на основе уверенности
-      result.entrySize = this.calculatePositionSize(currentPrice, result.confidence, settings);
-    }
-    
-    return result;
   }
 
   /**
@@ -1015,90 +1054,97 @@ class SignalAnalyzer {
    * @param {Object} marketData - Данные рынка
    * @param {Object} indicatorValues - Значения индикаторов
    * @param {Object} settings - Настройки анализа сигналов
-   * @returns {boolean} - Результат анализа сигналов на выход
+   * @returns {Promise<boolean>} - Результат анализа сигналов на выход
    */
   async analyzeExitSignals(currentPrice, marketData, indicatorValues, settings) {
-    if (!marketData.position) {
+    try {
+      if (!marketData.position) {
+        return false;
+      }
+      
+      const position = marketData.position;
+      const direction = position.direction;
+      const entryPrice = position.entryPrice;
+      const entryTime = new Date(position.entryTime).getTime();
+      const elapsedMinutes = Math.floor((Date.now() - entryTime) / 60000);
+      
+      // Расчет текущего P&L
+      let pnl = 0;
+      if (direction === 'LONG') {
+        pnl = (currentPrice - entryPrice) / entryPrice * 100;
+      } else { // SHORT
+        pnl = (entryPrice - currentPrice) / entryPrice * 100;
+      }
+      
+      // Проверка стоп-лосса или тейк-профита для скальпинга
+      if (position.strategy === 'SCALPING') {
+        if (position.takeProfitPrice && 
+           ((direction === 'LONG' && currentPrice >= position.takeProfitPrice) ||
+            (direction === 'SHORT' && currentPrice <= position.takeProfitPrice))) {
+          return true;
+        }
+        
+        if (position.stopLossPrice && 
+           ((direction === 'LONG' && currentPrice <= position.stopLossPrice) ||
+            (direction === 'SHORT' && currentPrice >= position.stopLossPrice))) {
+          return true;
+        }
+      }
+      
+      // Проверка трейлинг-стопа
+      if (settings.exitConditions && settings.exitConditions.useTrailingStop && 
+          position.trailingStopActive && 
+          position.trailingStopPrice) {
+        if ((direction === 'LONG' && currentPrice <= position.trailingStopPrice) ||
+            (direction === 'SHORT' && currentPrice >= position.trailingStopPrice)) {
+          return true;
+        }
+      }
+      
+      // Проверка максимальной длительности сделки
+      if (settings.exitConditions && settings.exitConditions.maxTradeDuration && 
+          elapsedMinutes > settings.exitConditions.maxTradeDuration) {
+        return true;
+      }
+      
+      // Проверка минимальной прибыли для закрытия
+      if (settings.exitConditions && settings.exitConditions.minProfitToClose && 
+          pnl >= settings.exitConditions.minProfitToClose) {
+        return true;
+      }
+      
+      // Проверка разворотного сигнала
+      if (settings.exitConditions && settings.exitConditions.closeOnReversalSignal) {
+        // RSI
+        if (indicatorValues.rsi) {
+          if ((direction === 'LONG' && indicatorValues.rsi.isOverbought) ||
+              (direction === 'SHORT' && indicatorValues.rsi.isOversold)) {
+            return true;
+          }
+        }
+        
+        // MACD
+        if (indicatorValues.macd && indicatorValues.macd.crossover) {
+          if ((direction === 'LONG' && indicatorValues.macd.direction === 'DOWN') ||
+              (direction === 'SHORT' && indicatorValues.macd.direction === 'UP')) {
+            return true;
+          }
+        }
+      }
+      
+      // Проверка ослабления тренда
+      if (settings.exitConditions && settings.exitConditions.closeOnWeakTrend && 
+          indicatorValues.trend && 
+          indicatorValues.trend.strength < 0.3 && 
+          elapsedMinutes > 30) {
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error(`Error in analyzeExitSignals for ${this.symbol}:`, error);
       return false;
     }
-    
-    const position = marketData.position;
-    const direction = position.direction;
-    const entryPrice = position.entryPrice;
-    const entryTime = new Date(position.entryTime).getTime();
-    const elapsedMinutes = Math.floor((Date.now() - entryTime) / 60000);
-    
-    // Расчет текущего P&L
-    let pnl = 0;
-    if (direction === 'LONG') {
-      pnl = (currentPrice - entryPrice) / entryPrice * 100;
-    } else { // SHORT
-      pnl = (entryPrice - currentPrice) / entryPrice * 100;
-    }
-    
-    // Проверка стоп-лосса или тейк-профита для скальпинга
-    if (position.strategy === 'SCALPING') {
-      if (position.takeProfitPrice && 
-         ((direction === 'LONG' && currentPrice >= position.takeProfitPrice) ||
-          (direction === 'SHORT' && currentPrice <= position.takeProfitPrice))) {
-        return true;
-      }
-      
-      if (position.stopLossPrice && 
-         ((direction === 'LONG' && currentPrice <= position.stopLossPrice) ||
-          (direction === 'SHORT' && currentPrice >= position.stopLossPrice))) {
-        return true;
-      }
-    }
-    
-    // Проверка трейлинг-стопа
-    if (settings.exitConditions.useTrailingStop && 
-        position.trailingStopActive && 
-        position.trailingStopPrice) {
-      if ((direction === 'LONG' && currentPrice <= position.trailingStopPrice) ||
-          (direction === 'SHORT' && currentPrice >= position.trailingStopPrice)) {
-        return true;
-      }
-    }
-    
-    // Проверка максимальной длительности сделки
-    if (elapsedMinutes > settings.exitConditions.maxTradeDuration) {
-      return true;
-    }
-    
-    // Проверка минимальной прибыли для закрытия
-    if (pnl >= settings.exitConditions.minProfitToClose) {
-      return true;
-    }
-    
-    // Проверка разворотного сигнала
-    if (settings.exitConditions.closeOnReversalSignal) {
-      // RSI
-      if (indicatorValues.rsi) {
-        if ((direction === 'LONG' && indicatorValues.rsi.isOverbought) ||
-            (direction === 'SHORT' && indicatorValues.rsi.isOversold)) {
-          return true;
-        }
-      }
-      
-      // MACD
-      if (indicatorValues.macd && indicatorValues.macd.crossover) {
-        if ((direction === 'LONG' && indicatorValues.macd.direction === 'DOWN') ||
-            (direction === 'SHORT' && indicatorValues.macd.direction === 'UP')) {
-          return true;
-        }
-      }
-    }
-    
-    // Проверка ослабления тренда
-    if (settings.exitConditions.closeOnWeakTrend && 
-        indicatorValues.trend && 
-        indicatorValues.trend.strength < 0.3 && 
-        elapsedMinutes > 30) {
-      return true;
-    }
-    
-    return false;
   }
 
   /**
@@ -1143,7 +1189,7 @@ class SignalAnalyzer {
     }
     
     // Проверка трейлинг-стопа
-    if (settings.exitConditions.useTrailingStop && 
+    if (settings.exitConditions && settings.exitConditions.useTrailingStop && 
         position.trailingStopActive && 
         position.trailingStopPrice &&
        ((direction === 'LONG' && currentPrice <= position.trailingStopPrice) ||
@@ -1152,17 +1198,19 @@ class SignalAnalyzer {
     }
     
     // Проверка максимальной длительности сделки
-    if (elapsedMinutes > settings.exitConditions.maxTradeDuration) {
+    if (settings.exitConditions && settings.exitConditions.maxTradeDuration &&
+        elapsedMinutes > settings.exitConditions.maxTradeDuration) {
       return 'Max Duration Exceeded';
     }
     
     // Проверка минимальной прибыли для закрытия
-    if (pnl >= settings.exitConditions.minProfitToClose) {
+    if (settings.exitConditions && settings.exitConditions.minProfitToClose &&
+        pnl >= settings.exitConditions.minProfitToClose) {
       return 'Profit Target Reached';
     }
     
     // Проверка разворотного сигнала
-    if (settings.exitConditions.closeOnReversalSignal) {
+    if (settings.exitConditions && settings.exitConditions.closeOnReversalSignal) {
       if (indicatorValues.rsi &&
          ((direction === 'LONG' && indicatorValues.rsi.isOverbought) ||
           (direction === 'SHORT' && indicatorValues.rsi.isOversold))) {
@@ -1177,7 +1225,7 @@ class SignalAnalyzer {
     }
     
     // Проверка ослабления тренда
-    if (settings.exitConditions.closeOnWeakTrend && 
+    if (settings.exitConditions && settings.exitConditions.closeOnWeakTrend && 
         indicatorValues.trend && 
         indicatorValues.trend.strength < 0.3 && 
         elapsedMinutes > 30) {
@@ -1202,7 +1250,7 @@ class SignalAnalyzer {
     let adjustedSize = baseSize * Math.max(0.5, confidence);
     
     // Корректировка размера на основе волатильности
-    if (this.lastAnalysis && this.lastAnalysis.result.marketConditions) {
+    if (this.lastAnalysis && this.lastAnalysis.result && this.lastAnalysis.result.marketConditions) {
       const volatility = this.lastAnalysis.result.marketConditions.volatility;
       
       if (volatility > 2.0) {
@@ -1263,7 +1311,7 @@ class SignalAnalyzer {
     }
     
     // Корректировка стоп-лосса на основе волатильности
-    if (this.lastAnalysis && this.lastAnalysis.result.indicators && this.lastAnalysis.result.indicators.volatility) {
+    if (this.lastAnalysis && this.lastAnalysis.result && this.lastAnalysis.result.indicators && this.lastAnalysis.result.indicators.volatility) {
       const volatility = this.lastAnalysis.result.indicators.volatility.value;
       
       if (volatility > 1.5) {
@@ -1286,33 +1334,48 @@ class SignalAnalyzer {
   /**
    * Получение значений индикаторов для визуализации
    * @param {Array} candles - Исторические свечи
-   * @returns {Object} - Значения индикаторов для визуализации
+   * @returns {Promise<Object>} - Значения индикаторов для визуализации
    */
   async getIndicatorValues(candles) {
-    return await this.calculateIndicators(candles, {
-      rsi: { enabled: true },
-      macd: { enabled: true },
-      bollinger: { enabled: true },
-      ma: { enabled: true }
-    });
+    try {
+      return await this.calculateIndicators(candles, {
+        rsi: { enabled: true },
+        macd: { enabled: true },
+        bollinger: { enabled: true },
+        ma: { enabled: true }
+      });
+    } catch (error) {
+      console.error(`Error in getIndicatorValues for ${this.symbol}:`, error);
+      return {};
+    }
   }
 
   /**
    * Получение условий рынка
-   * @returns {Object} - Текущие условия рынка
+   * @returns {Promise<Object>} - Текущие условия рынка
    */
   async getMarketConditions() {
-    if (this.lastAnalysis && this.lastAnalysis.result && this.lastAnalysis.result.marketConditions) {
-      return this.lastAnalysis.result.marketConditions;
+    try {
+      if (this.lastAnalysis && this.lastAnalysis.result && this.lastAnalysis.result.marketConditions) {
+        return this.lastAnalysis.result.marketConditions;
+      }
+      
+      // Если нет последнего анализа, возвращаем пустой объект
+      return {
+        marketType: 'UNKNOWN',
+        volatility: 0,
+        volumeRatio: 1,
+        trendStrength: 0
+      };
+    } catch (error) {
+      console.error(`Error in getMarketConditions for ${this.symbol}:`, error);
+      return {
+        marketType: 'UNKNOWN',
+        volatility: 0,
+        volumeRatio: 1,
+        trendStrength: 0
+      };
     }
-    
-    // Если нет последнего анализа, возвращаем пустой объект
-    return {
-      marketType: 'UNKNOWN',
-      volatility: 0,
-      volumeRatio: 1,
-      trendStrength: 0
-    };
   }
 
   /**
@@ -1324,3 +1387,5 @@ class SignalAnalyzer {
     console.log(`Signal analyzer settings updated for ${this.symbol}`);
   }
 }
+
+module.exports = SignalAnalyzer;
