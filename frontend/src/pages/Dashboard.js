@@ -329,9 +329,10 @@ const Dashboard = () => {
   
   // Fetch active bots on page load
   useEffect(() => {
-    fetchActiveBots();
-    scanAllPairs();
-  }, []);
+  fetchActiveBots();
+  // При загрузке страницы сканируем только активные пары
+  scanAllPairs(false);
+}, []);
 
   // Periodically update data
   useEffect(() => {
@@ -358,27 +359,46 @@ const Dashboard = () => {
   };
 
   // Scan all trading pairs
-  const scanAllPairs = async () => {
-    try {
-      setScanning(true);
-      const result = await scanPairs();
-      if (result && Array.isArray(result)) {
-        // Filter pairs with confidence >= 70%
-        const filteredSignals = result
-          .filter(signal => signal.confidence >= 0.7)
-          .sort((a, b) => b.confidence - a.confidence) // Sort by confidence (descending)
-          .slice(0, 8); // Take top 8 pairs
-        
-        setSignals(filteredSignals);
-      }
-      setError(null);
-    } catch (err) {
-      console.error('Error scanning pairs:', err);
-      setError('Failed to scan trading pairs: ' + (err.message || 'Unknown error'));
-    } finally {
+  const scanAllPairs = async (fullScan = false) => {
+  try {
+    setScanning(true);
+    
+    // Определяем, нужно ли сканировать только активные пары
+    // При автоматическом сканировании (при загрузке страницы) - только активные
+    // При нажатии кнопки "Scan Pairs" - все пары
+    const onlyActive = !fullScan;
+    
+    // Получаем список активных ботов
+    const activeSymbols = Object.keys(activeBots);
+    
+    // Если параметр onlyActive=true, но нет активных ботов, не выполняем сканирование
+    if (onlyActive && activeSymbols.length === 0) {
+      console.log('Нет активных ботов для сканирования');
+      setSignals([]);
       setScanning(false);
+      return;
     }
-  };
+    
+    // Вызываем API с параметром onlyActive
+    const result = await scanPairs({ onlyActive });
+    
+    if (result && Array.isArray(result)) {
+      // Filter pairs with confidence >= 70%
+      const filteredSignals = result
+        .filter(signal => signal.confidence >= 0.7)
+        .sort((a, b) => b.confidence - a.confidence) // Sort by confidence (descending)
+        .slice(0, 8); // Take top 8 pairs
+      
+      setSignals(filteredSignals);
+    }
+    setError(null);
+  } catch (err) {
+    console.error('Error scanning pairs:', err);
+    setError('Failed to scan trading pairs: ' + (err.message || 'Unknown error'));
+  } finally {
+    setScanning(false);
+  }
+};
 
   // Launch bot
   const handleLaunchBot = (signal) => {
@@ -539,15 +559,15 @@ const Dashboard = () => {
           Dashboard
         </Typography>
         <Box>
-          <Button 
-            variant="contained" 
-            color="primary" 
-            onClick={scanAllPairs}
-            disabled={scanning}
-            startIcon={scanning ? <CircularProgress size={20} /> : <RefreshIcon />}
-          >
-            {scanning ? 'Scanning...' : 'Scan Pairs'}
-          </Button>
+         <Button 
+  variant="contained" 
+  color="primary" 
+  onClick={() => scanAllPairs(true)}
+  disabled={scanning}
+  startIcon={scanning ? <CircularProgress size={20} /> : <RefreshIcon />}
+>
+  {scanning ? 'Scanning...' : 'Scan Pairs'}
+</Button>
         </Box>
       </Box>
       

@@ -752,16 +752,17 @@ exports.analyzeMarket = async (req, res) => {
 exports.scanPairs = async (req, res) => {
   try {
     const {
-      minVolume = 10000, // Снижен порог для минимального объема
+      minVolume = 10000,
       minScore = 0,
       maxPairs = 100,
       filterByBase = '',
       timeframes = '',
-      forceRefresh = 'false'
+      forceRefresh = 'false',
+      onlyActive = 'false'  // Новый параметр: сканировать только активные пары
     } = req.query;
     
-    console.log(`Scan pairs request received with parameters:`, {
-      minVolume, minScore, maxPairs, filterByBase, timeframes, forceRefresh
+    console.log(`Получен запрос на сканирование пар с параметрами:`, {
+      minVolume, minScore, maxPairs, filterByBase, timeframes, forceRefresh, onlyActive
     });
     
     // Настраиваем параметры сканирования
@@ -785,15 +786,18 @@ exports.scanPairs = async (req, res) => {
     // Проверяем, нужно ли принудительное обновление
     const forceRescan = forceRefresh === 'true';
     
+    // Проверяем, нужно ли сканировать только активные пары
+    const scanOnlyActive = onlyActive === 'true';
+    
     // Используем промисы вместо колбэков
     const performFullScan = () => {
       return new Promise((resolve, reject) => {
-        console.log('Starting full pair scan with options:', scanOptions);
+        console.log('Запуск полного сканирования пар с опциями:', scanOptions);
         
         // Запускаем полное сканирование
         pairScanner.scanAllPairs(scanOptions, (err, scanResults) => {
           if (err) {
-            console.error('Error performing full scan:', err);
+            console.error('Ошибка при полном сканировании:', err);
             reject(err);
             return;
           }
@@ -803,6 +807,55 @@ exports.scanPairs = async (req, res) => {
       });
     };
     
+    // Новая функция: сканирование только активных пар
+    const scanActivePairsOnly = () => {
+      return new Promise((resolve, reject) => {
+        console.log('Сканирование только активных пар');
+        
+        // Запуск сканирования только активных пар
+        pairScanner.scanActivePairs(activeBots, scanOptions, (err, scanResults) => {
+          if (err) {
+            console.error('Ошибка при сканировании активных пар:', err);
+            reject(err);
+            return;
+          }
+          
+          resolve(scanResults);
+        });
+      });
+    };
+    
+    // Получение результатов из кэша с фильтрацией по активным ботам
+    const getCachedResultsForActiveBots = () => {
+      return new Promise((resolve, reject) => {
+        // Если есть активные боты, создаем фильтр по их символам
+        if (scanOnlyActive && Object.keys(activeBots).length > 0) {
+          const activeSymbols = Object.keys(activeBots);
+          console.log(`Получение кэшированных результатов для активных ботов: ${activeSymbols.join(', ')}`);
+          
+          pairScanner.getLastScanResults({
+            symbols: activeSymbols,
+            ...filters
+          }, (err, cachedResults) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            resolve(cachedResults);
+          });
+        } else {
+          // Получаем обычные кэшированные результаты
+          pairScanner.getLastScanResults(filters, (err, cachedResults) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            resolve(cachedResults);
+          });
+        }
+      });
+    };
+
     // Если нет принудительного обновления, пробуем получить кэшированные результаты
     if (!forceRescan) {
       try {
@@ -821,29 +874,26 @@ exports.scanPairs = async (req, res) => {
           filters.baseCoin = filterByBase;
         }
         
-        console.log('Trying to get cached scan results with filters:', filters);
-        
-        // Используем промис вместо колбэка
-        const getCachedResults = () => {
-          return new Promise((resolve, reject) => {
-            pairScanner.getLastScanResults(filters, (err, cachedResults) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-              resolve(cachedResults);
-            });
+        // Если нужно сканировать только активные пары, но нет активных ботов
+        if (scanOnlyActive && Object.keys(activeBots).length === 0) {
+          return res.json({
+            results: [],
+            scanTime: new Date(),
+            totalScanned: 0,
+            message: 'Нет активных ботов для сканирования'
           });
-        };
+        }
         
         try {
-          const cachedResults = await getCachedResults();
+          // Получаем кэшированные результаты (с учетом активных ботов, если нужно)
+          const cachedResults = await getCachedResultsForActiveBots();
           
+          // Проверяем свежесть кэша (не старше 1 часа)
           if (cachedResults && cachedResults.results && cachedResults.results.length > 0 && 
               cachedResults.scanTime && 
               (new Date() - new Date(cachedResults.scanTime)) < 60 * 60 * 1000) {
-            // Если есть результаты и они свежие (не старше 1 часа), возвращаем их
-            console.log(`Returning ${cachedResults.results.length} cached results from ${cachedResults.scanTime}`);
+            // Если есть результаты и они свежие, возвращаем их
+            console.log(`Возвращаем ${cachedResults.results.length} кэшированных результатов от ${cachedResults.scanTime}`);
             return res.json({
               results: cachedResults.results,
               scanTime: cachedResults.scanTime,
@@ -851,13 +901,17 @@ exports.scanPairs = async (req, res) => {
               fromCache: true
             });
           } else {
-            console.log('Cache is empty or expired, performing full scan');
-            // Если кэш устарел или пуст, выполняем полное сканирование
-            const scanResults = await performFullScan();
+            console.log('Кэш пуст или устарел, выполняем новое сканирование');
+            // Если кэш устарел или пуст, выполняем новое сканирование
+            
+            // Выбираем метод сканирования в зависимости от настроек
+            const scanResults = scanOnlyActive ? 
+              await scanActivePairsOnly() : 
+              await performFullScan();
             
             // Проверяем, есть ли результаты
             if (!scanResults.results || scanResults.results.length === 0) {
-              console.warn('Scan completed but no results were returned');
+              console.warn('Сканирование завершено, но результаты не найдены');
               return res.json({
                 results: [],
                 scanTime: new Date(),
@@ -867,7 +921,7 @@ exports.scanPairs = async (req, res) => {
               });
             }
             
-            console.log(`Scan completed successfully with ${scanResults.results.length} results`);
+            console.log(`Сканирование успешно завершено с ${scanResults.results.length} результатами`);
             return res.json({
               results: scanResults.results,
               scanTime: scanResults.scanTime,
@@ -876,13 +930,16 @@ exports.scanPairs = async (req, res) => {
             });
           }
         } catch (cacheError) {
-          console.warn('Error with cache retrieval:', cacheError.message);
-          // В случае ошибки с кэшем, выполняем полное сканирование
-          const scanResults = await performFullScan();
+          console.warn('Ошибка при получении кэша:', cacheError.message);
+          
+          // Выбираем метод сканирования в зависимости от настроек
+          const scanResults = scanOnlyActive ? 
+            await scanActivePairsOnly() : 
+            await performFullScan();
           
           // Проверяем, есть ли результаты
           if (!scanResults.results || scanResults.results.length === 0) {
-            console.warn('Scan completed but no results were returned');
+            console.warn('Сканирование завершено, но результаты не найдены');
             return res.json({
               results: [],
               scanTime: new Date(),
@@ -892,7 +949,7 @@ exports.scanPairs = async (req, res) => {
             });
           }
           
-          console.log(`Scan completed successfully with ${scanResults.results.length} results`);
+          console.log(`Сканирование успешно завершено с ${scanResults.results.length} результатами`);
           return res.json({
             results: scanResults.results,
             scanTime: scanResults.scanTime,
@@ -901,14 +958,17 @@ exports.scanPairs = async (req, res) => {
           });
         }
       } catch (error) {
-        console.error('Error in cache handling:', error);
-        // В случае ошибки, выполняем полное сканирование
+        console.error('Ошибка при обработке кэша:', error);
+        
+        // Выбираем метод сканирования в зависимости от настроек
         try {
-          const scanResults = await performFullScan();
+          const scanResults = scanOnlyActive ? 
+            await scanActivePairsOnly() : 
+            await performFullScan();
           
           // Проверяем, есть ли результаты
           if (!scanResults.results || scanResults.results.length === 0) {
-            console.warn('Scan completed but no results were returned');
+            console.warn('Сканирование завершено, но результаты не найдены');
             return res.json({
               results: [],
               scanTime: new Date(),
@@ -918,7 +978,7 @@ exports.scanPairs = async (req, res) => {
             });
           }
           
-          console.log(`Scan completed successfully with ${scanResults.results.length} results`);
+          console.log(`Сканирование успешно завершено с ${scanResults.results.length} результатами`);
           return res.json({
             results: scanResults.results,
             scanTime: scanResults.scanTime,
@@ -926,7 +986,7 @@ exports.scanPairs = async (req, res) => {
             fromCache: false
           });
         } catch (scanError) {
-          console.error('Error performing full scan:', scanError);
+          console.error('Ошибка при выполнении сканирования:', scanError);
           return res.status(500).json({ 
             error: scanError.message,
             details: 'Произошла ошибка при сканировании пар'
@@ -934,14 +994,17 @@ exports.scanPairs = async (req, res) => {
         }
       }
     } else {
-      console.log('Force refresh requested, performing full scan');
-      // Если требуется принудительное обновление, сразу запускаем полное сканирование
+      console.log('Запрошено принудительное обновление, выполняем полное сканирование');
+      
+      // Выбираем метод сканирования в зависимости от настроек
       try {
-        const scanResults = await performFullScan();
+        const scanResults = scanOnlyActive ? 
+          await scanActivePairsOnly() : 
+          await performFullScan();
         
         // Проверяем, есть ли результаты
         if (!scanResults.results || scanResults.results.length === 0) {
-          console.warn('Scan completed but no results were returned');
+          console.warn('Сканирование завершено, но результаты не найдены');
           return res.json({
             results: [],
             scanTime: new Date(),
@@ -951,7 +1014,7 @@ exports.scanPairs = async (req, res) => {
           });
         }
         
-        console.log(`Scan completed successfully with ${scanResults.results.length} results`);
+        console.log(`Сканирование успешно завершено с ${scanResults.results.length} результатами`);
         return res.json({
           results: scanResults.results,
           scanTime: scanResults.scanTime,
@@ -959,7 +1022,7 @@ exports.scanPairs = async (req, res) => {
           fromCache: false
         });
       } catch (scanError) {
-        console.error('Error performing full scan:', scanError);
+        console.error('Ошибка при выполнении сканирования:', scanError);
         return res.status(500).json({ 
           error: scanError.message,
           details: 'Произошла ошибка при сканировании пар'
@@ -967,7 +1030,7 @@ exports.scanPairs = async (req, res) => {
       }
     }
   } catch (error) {
-    console.error('Unexpected error in scanPairs:', error);
+    console.error('Непредвиденная ошибка в scanPairs:', error);
     res.status(500).json({ 
       error: error.message,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,

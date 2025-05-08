@@ -11,114 +11,192 @@ class PairScanner {
     this.isScanning = false;
     this.lastScanTime = null;
     this.scanResults = {};
+    this.scanningTimeout = 5 * 60 * 1000; // 5 минут, после которых считаем сканирование зависшим
   }
 
-  // Полное сканирование всех пар
-// Метод scanAllPairs с исправленной обработкой ошибок
-scanAllPairs(options = {}, callback) {
-  // Проверяем, идет ли уже сканирование
-  if (this.isScanning) {
-    // Если сканирование идет слишком долго (более 5 минут), сбрасываем флаг
-    if (this.lastScanTime && Date.now() - this.lastScanTime > 5 * 60 * 1000) {
-      console.warn('Previous scanning appears to be stuck, resetting scanning state');
+  // Полное сканирование всех пар - только при явном вызове пользователем
+  scanAllPairs(options = {}, callback) {
+    // Проверяем, идет ли уже сканирование
+    if (this.isScanning) {
+      // Если сканирование идет слишком долго, сбрасываем флаг
+      if (this.lastScanTime && Date.now() - this.lastScanTime > this.scanningTimeout) {
+        console.warn('Предыдущее сканирование зависло, сбрасываем состояние сканирования');
+        this.isScanning = false;
+      } else {
+        return callback(new Error('Сканирование уже выполняется'));
+      }
+    }
+
+    // Устанавливаем флаг сканирования и время начала
+    this.isScanning = true;
+    this.lastScanTime = Date.now();
+    console.log('Запуск полного сканирования пар...');
+
+    try {
+      // Значения по умолчанию для опций
+      const defaultOptions = {
+        minVolume: 10000, // Значительно снижен минимальный 24ч объем в USDT
+        minLiquidity: 0.5,  // Минимальная ликвидность (0-1)
+        minPriceChange: 0,  // Минимальное процентное изменение цены
+        maxPairs: 100,      // Макс. количество пар для анализа
+        saveToDb: true,     // Сохранять результаты в БД
+        sortBy: 'score',    // Сортировка результатов
+        filterByBase: [],   // Фильтр по базовой валюте
+        excludeStablecoins: false, // Исключать стейблкоины
+        timeframes: ['1h', '4h', '1d'], // Таймфреймы для анализа
+      };
+
+      const scanOptions = { ...defaultOptions, ...options };
+      
+      // Получаем все символы с биржи
+      this.api.getSymbols((err, symbolsResponse) => {
+        if (err) {
+          this.isScanning = false; // Сбрасываем флаг при ошибке
+          return callback(new Error('Не удалось получить символы с биржи: ' + err.message));
+        }
+        
+        if (!symbolsResponse || !symbolsResponse.data || !Array.isArray(symbolsResponse.data)) {
+          this.isScanning = false; // Сбрасываем флаг при ошибке
+          return callback(new Error('Некорректный ответ с биржи при получении символов'));
+        }
+        
+        console.log(`Получено ${symbolsResponse.data.length} символов с BitGet`);
+        console.log('Пример данных символа:', JSON.stringify(symbolsResponse.data[0]));
+
+        // Фильтруем USDT-фьючерсы
+        let futuresSymbols = symbolsResponse.data
+          .filter(item => item && item.symbol && item.symbol.includes('USDT'))
+          .map(item => ({
+            symbol: item.symbol,
+            baseCoin: item.baseCoin || item.symbol.replace('USDT', ''),
+            quoteCoin: item.quoteCoin || 'USDT'
+          }));
+        
+        console.log(`Отфильтровано ${futuresSymbols.length} USDT фьючерсных пар`);
+
+        // Применяем фильтр по базовой валюте, если указан
+        if (scanOptions.filterByBase && scanOptions.filterByBase.length > 0) {
+          futuresSymbols = futuresSymbols.filter(item => 
+            scanOptions.filterByBase.includes(item.baseCoin)
+          );
+          console.log(`Применен фильтр по базовым валютам, осталось пар: ${futuresSymbols.length}`);
+        }
+
+        // Процесс получения тикеров и анализа пар
+        this._processPairsBatches(futuresSymbols, scanOptions, (processingErr, results) => {
+          this.isScanning = false; // Сбрасываем флаг независимо от результата
+          
+          if (processingErr) {
+            return callback(processingErr);
+          }
+          
+          // Сортируем результаты
+          results.sort((a, b) => b.score - a.score);
+          
+          this.lastScanTime = new Date();
+          this.scanResults = results.reduce((acc, result) => {
+            acc[result.symbol] = result;
+            return acc;
+          }, {});
+          
+          console.log(`Сканирование завершено в ${this.lastScanTime}, проанализировано ${results.length} пар`);
+          
+          callback(null, {
+            results,
+            scanTime: this.lastScanTime,
+            totalScanned: results.length
+          });
+        });
+      });
+    } catch (error) {
+      // Сбрасываем флаг при любой непредвиденной ошибке
       this.isScanning = false;
-    } else {
-      return callback(new Error('Scanning is already in progress'));
+      console.error('Непредвиденная ошибка в scanAllPairs:', error);
+      callback(error);
     }
   }
-
-  // Устанавливаем флаг сканирования и время начала
-  this.isScanning = true;
-  this.lastScanTime = Date.now();
-  console.log('Starting comprehensive pair scanning...');
-
-  try {
+  
+  // Новый метод: сканирование только активных пар (те, для которых запущены боты)
+  scanActivePairs(activeBots = {}, options = {}, callback) {
+    if (!activeBots || Object.keys(activeBots).length === 0) {
+      return callback(null, {
+        results: [],
+        scanTime: new Date(),
+        totalScanned: 0,
+        message: 'Нет активных ботов для сканирования'
+      });
+    }
+    
+    // Получаем список символов активных ботов
+    const activeSymbols = Object.keys(activeBots);
+    console.log(`Сканирование только активных пар: ${activeSymbols.join(', ')}`);
+    
+    // Если сканирование уже идет - просто возвращаем последние результаты для активных пар
+    if (this.isScanning) {
+      const activePairsResults = activeSymbols
+        .filter(symbol => this.scanResults[symbol])
+        .map(symbol => this.scanResults[symbol]);
+      
+      return callback(null, {
+        results: activePairsResults,
+        scanTime: this.lastScanTime || new Date(),
+        totalScanned: activePairsResults.length,
+        fromCache: true,
+        message: 'Возвращены кэшированные результаты, так как сканирование уже выполняется'
+      });
+    }
+    
+    // Устанавливаем флаг сканирования
+    this.isScanning = true;
+    this.lastScanTime = Date.now();
+    
+    // Подготавливаем список пар в формате, подходящем для обработки
+    const pairsToScan = activeSymbols.map(symbol => {
+      // Извлекаем базовую валюту из символа (например, из BTCUSDT получаем BTC)
+      const baseCoin = symbol.replace('USDT', '');
+      return {
+        symbol,
+        baseCoin,
+        quoteCoin: 'USDT'
+      };
+    });
+    
     // Значения по умолчанию для опций
     const defaultOptions = {
-      minVolume: 10000, // Значительно снижен минимальный 24ч объем в USDT
-      minLiquidity: 0.5,  // Минимальная ликвидность (0-1)
-      minPriceChange: 0,  // Минимальное процентное изменение цены
-      maxPairs: 100,      // Макс. количество пар для анализа
       saveToDb: true,     // Сохранять результаты в БД
-      sortBy: 'score',    // Сортировка результатов
-      filterByBase: [],   // Фильтр по базовой валюте
-      excludeStablecoins: false, // Исключать стейблкоины
       timeframes: ['1h', '4h', '1d'], // Таймфреймы для анализа
     };
 
     const scanOptions = { ...defaultOptions, ...options };
     
-    // Получаем все символы с биржи
-    this.api.getSymbols((err, symbolsResponse) => {
-      if (err) {
-        this.isScanning = false; // Важно: сбрасываем флаг при ошибке
-        return callback(new Error('Failed to fetch symbols from exchange: ' + err.message));
+    // Обрабатываем только выбранные пары
+    this._processPairsBatches(pairsToScan, scanOptions, (processingErr, results) => {
+      this.isScanning = false; // Сбрасываем флаг независимо от результата
+      
+      if (processingErr) {
+        return callback(processingErr);
       }
       
-      if (!symbolsResponse || !symbolsResponse.data || !Array.isArray(symbolsResponse.data)) {
-        this.isScanning = false; // Важно: сбрасываем флаг при ошибке
-        return callback(new Error('Invalid symbols response from exchange'));
-      }
+      this.lastScanTime = new Date();
       
-      console.log(`Retrieved ${symbolsResponse.data.length} total symbols from BitGet`);
-      console.log('Sample symbol data:', JSON.stringify(symbolsResponse.data[0]));
-
-      // Фильтруем USDT-фьючерсы
-      let futuresSymbols = symbolsResponse.data
-        .filter(item => item && item.symbol && item.symbol.includes('USDT'))
-        .map(item => ({
-          symbol: item.symbol,
-          baseCoin: item.baseCoin || item.symbol.replace('USDT', ''),
-          quoteCoin: item.quoteCoin || 'USDT'
-        }));
+      // Обновляем кэш только для активных пар
+      results.forEach(result => {
+        this.scanResults[result.symbol] = result;
+      });
       
-      console.log(`Filtered ${futuresSymbols.length} USDT futures pairs`);
-
-      // Применяем фильтр по базовой валюте, если указан
-      if (scanOptions.filterByBase.length > 0) {
-        futuresSymbols = futuresSymbols.filter(item => 
-          scanOptions.filterByBase.includes(item.baseCoin)
-        );
-        console.log(`Applied base coin filter, remaining pairs: ${futuresSymbols.length}`);
-      }
-
-      // Процесс получения тикеров и анализа пар
-      this._processPairsBatches(futuresSymbols, scanOptions, (processingErr, results) => {
-        this.isScanning = false; // Важно: сбрасываем флаг независимо от результата
-        
-        if (processingErr) {
-          return callback(processingErr);
-        }
-        
-        // Сортируем результаты
-        results.sort((a, b) => b.score - a.score);
-        
-        this.lastScanTime = new Date();
-        this.scanResults = results.reduce((acc, result) => {
-          acc[result.symbol] = result;
-          return acc;
-        }, {});
-        
-        console.log(`Scan completed at ${this.lastScanTime}, analyzed ${results.length} pairs`);
-        
-        callback(null, {
-          results,
-          scanTime: this.lastScanTime,
-          totalScanned: results.length
-        });
+      console.log(`Сканирование активных пар завершено в ${this.lastScanTime}, проанализировано ${results.length} пар`);
+      
+      callback(null, {
+        results,
+        scanTime: this.lastScanTime,
+        totalScanned: results.length
       });
     });
-  } catch (error) {
-    // Важно: сбрасываем флаг при любой непредвиденной ошибке
-    this.isScanning = false;
-    console.error('Unexpected error in scanAllPairs:', error);
-    callback(error);
   }
-}
 
   // Обработка пар пакетами
   _processPairsBatches(symbols, options, callback) {
-    const batchSize = 20; // Размер пакета для запросов к API
+    const batchSize = 5; // Меньший размер пакета для стабильности
     let allTickerData = [];
     let processedCount = 0;
     
@@ -142,18 +220,18 @@ scanAllPairs(options = {}, callback) {
         return new Promise((resolve) => {
           this.api.getTicker(item.symbol, (tickerErr, ticker) => {
             if (tickerErr) {
-              console.warn(`Error getting ticker for ${item.symbol}:`, tickerErr.message);
+              console.warn(`Ошибка получения тикера для ${item.symbol}:`, tickerErr.message);
               resolve(null);
               return;
             }
             
             if (!ticker || !ticker.data) {
-              console.warn(`No ticker data for ${item.symbol}`);
+              console.warn(`Нет данных тикера для ${item.symbol}`);
               resolve(null);
               return;
             }
             
-            console.log(`Got ticker for ${item.symbol}:`, JSON.stringify(ticker.data).substring(0, 200));
+            console.log(`Получен тикер для ${item.symbol}:`, JSON.stringify(ticker.data).substring(0, 200));
             
             // Проверяем структуру данных и наличие необходимых полей
             if (Array.isArray(ticker.data) && ticker.data.length > 0) {
@@ -168,7 +246,7 @@ scanAllPairs(options = {}, callback) {
                 ticker: ticker.data
               });
             } else {
-              console.warn(`Invalid ticker data format for ${item.symbol}`);
+              console.warn(`Некорректный формат данных тикера для ${item.symbol}`);
               resolve(null);
             }
           });
@@ -178,17 +256,17 @@ scanAllPairs(options = {}, callback) {
       Promise.all(batchPromises)
         .then(batchResults => {
           const validResults = batchResults.filter(item => item !== null);
-          console.log(`Batch processed: ${validResults.length}/${batch.length} valid results`);
+          console.log(`Обработан пакет: ${validResults.length}/${batch.length} валидных результатов`);
           allTickerData = allTickerData.concat(validResults);
           
           processedCount += batch.length;
-          console.log(`Processed ${processedCount}/${symbols.length} pairs`);
+          console.log(`Обработано ${processedCount}/${symbols.length} пар`);
           
           // Небольшая задержка перед следующей партией
-          setTimeout(() => processBatch(startIdx + batchSize), 500);
+          setTimeout(() => processBatch(startIdx + batchSize), 1000);
         })
         .catch(error => {
-          console.error('Error processing batch:', error);
+          console.error('Ошибка обработки пакета:', error);
           this.isScanning = false; // Сбрасываем флаг при ошибке обработки партии
           callback(error);
         });
@@ -200,11 +278,11 @@ scanAllPairs(options = {}, callback) {
 
   // Фильтрация и анализ пар
   _filterAndAnalyzePairs(tickerData, options, callback) {
-    console.log(`Starting filtering and analysis of ${tickerData.length} pairs`);
+    console.log(`Начало фильтрации и анализа ${tickerData.length} пар`);
     
     // Предварительная фильтрация по объему с гибким подходом
     const filteredByVolume = [];
-    let minVolumeThreshold = options.minVolume;
+    let minVolumeThreshold = options.minVolume || 10000;
     
     for (const item of tickerData) {
       try {
@@ -236,15 +314,15 @@ scanAllPairs(options = {}, callback) {
           });
         }
       } catch (error) {
-        console.error(`Error processing volume for ${item.symbol}:`, error);
+        console.error(`Ошибка обработки объема для ${item.symbol}:`, error);
       }
     }
     
-    console.log(`Preliminary volume filter: ${filteredByVolume.length} pairs passed with minimum volume of ${minVolumeThreshold} USDT`);
+    console.log(`Предварительный фильтр объема: ${filteredByVolume.length} пар прошли с минимальным объемом ${minVolumeThreshold} USDT`);
     
     // Если ничего не прошло фильтр, пробуем снизить порог
     if (filteredByVolume.length === 0 && minVolumeThreshold > 1000) {
-      console.log(`No pairs passed preliminary volume filter, lowering threshold and retrying...`);
+      console.log(`Ни одна пара не прошла предварительный фильтр объема, снижаем порог и пробуем снова...`);
       minVolumeThreshold = 1000; // Очень низкий порог
       
       for (const item of tickerData) {
@@ -271,16 +349,16 @@ scanAllPairs(options = {}, callback) {
             });
           }
         } catch (error) {
-          console.error(`Error processing volume (2nd attempt) for ${item.symbol}:`, error);
+          console.error(`Ошибка обработки объема (2-я попытка) для ${item.symbol}:`, error);
         }
       }
       
-      console.log(`After lowering threshold to ${minVolumeThreshold}: ${filteredByVolume.length} pairs passed`);
+      console.log(`После снижения порога до ${minVolumeThreshold}: ${filteredByVolume.length} пар прошли фильтрацию`);
     }
     
     // Если все еще нет результатов, просто берем первые N пар без фильтрации
-    if (filteredByVolume.length === 0) {
-      console.log(`No pairs available even with very low volume threshold, taking first ${Math.min(20, tickerData.length)} pairs without volume filtering`);
+    if (filteredByVolume.length === 0 && tickerData.length > 0) {
+      console.log(`Нет доступных пар даже с очень низким порогом объема, берем первые ${Math.min(20, tickerData.length)} пар без фильтрации объема`);
       const topPairs = tickerData.slice(0, Math.min(20, tickerData.length));
       
       for (const item of topPairs) {
@@ -291,12 +369,13 @@ scanAllPairs(options = {}, callback) {
       }
     }
 
-    // Ограничиваем количество пар для детального анализа
-    const pairsToAnalyze = options.maxPairs > 0 
+    // Если запрошены только определенные символы (для активных ботов), 
+    // не ограничиваем количество пар для анализа
+    const pairsToAnalyze = options.maxPairs > 0 && filteredByVolume.length > options.maxPairs
       ? filteredByVolume.slice(0, options.maxPairs) 
       : filteredByVolume;
     
-    console.log(`Selected ${pairsToAnalyze.length} pairs for detailed analysis`);
+    console.log(`Выбрано ${pairsToAnalyze.length} пар для детального анализа`);
     
     // Создаем конфигурацию для анализатора рынка
     const analyzerConfig = {
@@ -319,7 +398,7 @@ scanAllPairs(options = {}, callback) {
       }
       
       const pair = pairsToAnalyze[index];
-      console.log(`Analyzing ${pair.symbol}... (${index + 1}/${pairsToAnalyze.length})`);
+      console.log(`Анализируем ${pair.symbol}... (${index + 1}/${pairsToAnalyze.length})`);
       
       try {
         const analyzer = new MarketAnalyzer(pair.symbol, analyzerConfig, this.api);
@@ -327,7 +406,7 @@ scanAllPairs(options = {}, callback) {
         // Анализ на различных таймфреймах
         this._analyzeMultipleTimeframes(analyzer, options.timeframes, (tfErr, timeframeResults) => {
           if (tfErr) {
-            console.error(`Error analyzing timeframes for ${pair.symbol}:`, tfErr.message);
+            console.error(`Ошибка анализа таймфреймов для ${pair.symbol}:`, tfErr.message);
             // Продолжаем со следующей парой даже при ошибке
             setTimeout(() => analyzePair(index + 1), 100);
             return;
@@ -428,25 +507,25 @@ scanAllPairs(options = {}, callback) {
             results.push(result);
             this.scanResults[pair.symbol] = result;
             
-            console.log(`Completed analysis of ${pair.symbol}, score: ${pairScore.toFixed(2)}`);
+            console.log(`Завершен анализ ${pair.symbol}, скор: ${pairScore.toFixed(2)}`);
             
             // Сохраняем в базу данных, если опция включена
             if (options.saveToDb) {
               this._saveScanResult(result);
             }
             
-            // Переходим к следующей паре
-            setTimeout(() => analyzePair(index + 1), 100);
+            // Добавляем небольшую задержку между обработкой пар
+            setTimeout(() => analyzePair(index + 1), 300);
           } catch (analysisError) {
-            console.error(`Error processing analysis for ${pair.symbol}:`, analysisError);
+            console.error(`Ошибка обработки анализа для ${pair.symbol}:`, analysisError);
             // Продолжаем со следующей парой
-            setTimeout(() => analyzePair(index + 1), 100);
+            setTimeout(() => analyzePair(index + 1), 300);
           }
         });
       } catch (analyzerError) {
-        console.error(`Error creating analyzer for ${pair.symbol}:`, analyzerError);
+        console.error(`Ошибка создания анализатора для ${pair.symbol}:`, analyzerError);
         // Продолжаем со следующей парой
-        setTimeout(() => analyzePair(index + 1), 100);
+        setTimeout(() => analyzePair(index + 1), 300);
       }
     };
     
@@ -454,7 +533,7 @@ scanAllPairs(options = {}, callback) {
     if (pairsToAnalyze.length > 0) {
       analyzePair(0);
     } else {
-      console.log('No pairs available for analysis');
+      console.log('Нет пар для анализа');
       callback(null, []);
     }
   }
@@ -475,7 +554,7 @@ scanAllPairs(options = {}, callback) {
           if (!err && result) {
             results[tf] = result;
           } else if (err) {
-            console.warn(`Error analyzing ${analyzer.symbol} on ${tf} timeframe:`, err.message);
+            console.warn(`Ошибка анализа ${analyzer.symbol} на таймфрейме ${tf}:`, err.message);
           }
           
           completedCount++;
@@ -484,7 +563,7 @@ scanAllPairs(options = {}, callback) {
           }
         });
       } catch (analyzerError) {
-        console.error(`Exception in analyzer for ${analyzer.symbol} on ${tf} timeframe:`, analyzerError);
+        console.error(`Исключение в анализаторе для ${analyzer.symbol} на таймфрейме ${tf}:`, analyzerError);
         completedCount++;
         if (completedCount === timeframes.length) {
           callback(null, results);
@@ -499,7 +578,7 @@ scanAllPairs(options = {}, callback) {
     try {
       // Проверяем подключение к БД
       if (!mongoose.connection || mongoose.connection.readyState !== 1) {
-        console.warn('Database connection not available, skipping save');
+        console.warn('Соединение с базой данных недоступно, пропускаем сохранение');
         return;
       }
       
@@ -565,10 +644,10 @@ scanAllPairs(options = {}, callback) {
           }
         })
         .catch(err => {
-          console.error(`Error saving/updating scan record for ${result.symbol}:`, err);
+          console.error(`Ошибка сохранения/обновления записи сканирования для ${result.symbol}:`, err);
         });
     } catch (dbError) {
-      console.error(`Database error for ${result.symbol}:`, dbError);
+      console.error(`Ошибка базы данных для ${result.symbol}:`, dbError);
     }
   }
 
@@ -591,7 +670,7 @@ scanAllPairs(options = {}, callback) {
       try {
         // Проверяем подключение к БД
         if (!mongoose.connection || mongoose.connection.readyState !== 1) {
-          console.warn('Database connection not available, returning empty results');
+          console.warn('Соединение с базой данных недоступно, возвращаем пустые результаты');
           return callback(null, {
             results: [],
             scanTime: null,
@@ -608,7 +687,7 @@ scanAllPairs(options = {}, callback) {
         }
         
         if (filters.minVolume) {
-          query.volume24h = { $gte: filters.volume24h };
+          query.volume24h = { $gte: filters.minVolume };
         }
         
         if (filters.strategy) {
@@ -621,6 +700,11 @@ scanAllPairs(options = {}, callback) {
         
         if (filters.baseCoin) {
           query.baseCoin = filters.baseCoin;
+        }
+        
+        // Фильтр по конкретным символам (для активных ботов)
+        if (filters.symbols && Array.isArray(filters.symbols) && filters.symbols.length > 0) {
+          query.symbol = { $in: filters.symbols };
         }
 
         // Используем async/await вместо callback
