@@ -1,7 +1,8 @@
 // backend/api/controllers/signalController.js
-const SignalSettings = require('../api/models/SignalSettings');
+const SignalSettings = require('../models/SignalSettings');
 const BitgetAPI = require('../../services/BitgetAPI');
 const MarketAnalyzer = require('../../services/MarketAnalyzer');
+
 
 // Объект для хранения активных ботов (импортируем из botController)
 const { activeBots } = require('./botController');

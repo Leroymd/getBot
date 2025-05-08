@@ -5,9 +5,7 @@ const DCAStrategy = require('./strategies/DCAStrategy');
 const SignalAnalyzer = require('./SignalAnalyzer');
 const SignalSettings = require('../api/models/SignalSettings');
 
-/**
- * Класс торгового бота BitGet
- */
+ 
 class Bot {
   /**
    * Конструктор бота
