@@ -14,15 +14,25 @@ class PairScanner {
   }
 
   // Полное сканирование всех пар
-  scanAllPairs(options = {}, callback) {
-    // Проверяем, идет ли уже сканирование
-    if (this.isScanning) {
+// Метод scanAllPairs с исправленной обработкой ошибок
+scanAllPairs(options = {}, callback) {
+  // Проверяем, идет ли уже сканирование
+  if (this.isScanning) {
+    // Если сканирование идет слишком долго (более 5 минут), сбрасываем флаг
+    if (this.lastScanTime && Date.now() - this.lastScanTime > 5 * 60 * 1000) {
+      console.warn('Previous scanning appears to be stuck, resetting scanning state');
+      this.isScanning = false;
+    } else {
       return callback(new Error('Scanning is already in progress'));
     }
+  }
 
-    this.isScanning = true;
-    console.log('Starting comprehensive pair scanning...');
+  // Устанавливаем флаг сканирования и время начала
+  this.isScanning = true;
+  this.lastScanTime = Date.now();
+  console.log('Starting comprehensive pair scanning...');
 
+  try {
     // Значения по умолчанию для опций
     const defaultOptions = {
       minVolume: 10000, // Значительно снижен минимальный 24ч объем в USDT
@@ -41,12 +51,12 @@ class PairScanner {
     // Получаем все символы с биржи
     this.api.getSymbols((err, symbolsResponse) => {
       if (err) {
-        this.isScanning = false; // Сбрасываем флаг при ошибке
+        this.isScanning = false; // Важно: сбрасываем флаг при ошибке
         return callback(new Error('Failed to fetch symbols from exchange: ' + err.message));
       }
       
       if (!symbolsResponse || !symbolsResponse.data || !Array.isArray(symbolsResponse.data)) {
-        this.isScanning = false; // Сбрасываем флаг при ошибке
+        this.isScanning = false; // Важно: сбрасываем флаг при ошибке
         return callback(new Error('Invalid symbols response from exchange'));
       }
       
@@ -74,8 +84,7 @@ class PairScanner {
 
       // Процесс получения тикеров и анализа пар
       this._processPairsBatches(futuresSymbols, scanOptions, (processingErr, results) => {
-        // Всегда сбрасываем флаг по завершении, даже при ошибке
-        this.isScanning = false;
+        this.isScanning = false; // Важно: сбрасываем флаг независимо от результата
         
         if (processingErr) {
           return callback(processingErr);
@@ -99,7 +108,13 @@ class PairScanner {
         });
       });
     });
+  } catch (error) {
+    // Важно: сбрасываем флаг при любой непредвиденной ошибке
+    this.isScanning = false;
+    console.error('Unexpected error in scanAllPairs:', error);
+    callback(error);
   }
+}
 
   // Обработка пар пакетами
   _processPairsBatches(symbols, options, callback) {

@@ -455,9 +455,22 @@ class BitgetAPI {
  * @param {Function} callback - Callback-функция (опционально)
  * @returns {Promise|void} - Promise с результатом или void при использовании callback
  */
-placeOrder(params, callback) {
+/**
+ * Размещение ордера
+ * @param {string} symbol - Символ
+ * @param {string} side - Сторона (buy/sell)
+ * @param {string} orderType - Тип ордера (market/limit)
+ * @param {number} size - Размер ордера
+ * @param {number} price - Цена (опционально)
+ * @param {boolean} reduceOnly - Только для уменьшения позиции
+ * @param {Function} callback - Callback-функция (опционально)
+ * @returns {Promise|void} - Promise с результатом или void при использовании callback
+ */
+placeOrder(symbol, side, orderType, size, price = null, reduceOnly = false, callback = null) {
+  console.log(`Placing order for ${symbol}: ${side} ${orderType} ${size}`);
+  
   // Проверка наличия обязательных параметров
-  if (!params || !params.symbol) {
+  if (!symbol) {
     const error = new Error('Symbol is required for placing an order');
     if (typeof callback === 'function') {
       callback(error);
@@ -466,95 +479,106 @@ placeOrder(params, callback) {
     return Promise.reject(error);
   }
 
-  // Установка значений по умолчанию
-  const orderParams = {
-    symbol: params.symbol,
-    marginCoin: params.marginCoin || 'USDT', // По умолчанию USDT
-    size: params.size || '0',
-    side: params.side || 'BUY',
-    orderType: params.orderType || 'MARKET',
-    price: params.price || '',
-    timeInForceValue: params.timeInForceValue || 'normal',
-    marginMode: params.marginMode || 'isolated', // Важно: добавляем marginMode
-    clientOid: params.clientOid || `order_${Date.now()}`,
-    reduceOnly: params.reduceOnly === true ? 'true' : 'false',
+  // Создаем объект параметров для API
+  const params = {
+    symbol,
+    marginCoin: 'USDT', // По умолчанию USDT
+    size: size.toString(),
+    side: side.toUpperCase(),
+    orderType: orderType.toUpperCase(),
+    timeInForceValue: 'normal',
+    marginMode: 'isolated', // Важно: добавляем marginMode
+    clientOid: `order_${Date.now()}`,
+    reduceOnly: reduceOnly ? 'true' : 'false',
   };
 
-  // Логирование параметров ордера для отладки
-  this.log(`Placing order with params:`, JSON.stringify(orderParams));
-  
-  // Для рыночного ордера, если размер не указан, и есть заданная стоимость (в USDT)
-  if (orderParams.orderType === 'MARKET' && (orderParams.size === '0' || !orderParams.size) && params.quoteAmount) {
-    this.log(`Using quote amount for market order: ${params.quoteAmount}`);
-    orderParams.quantity = params.quoteAmount;
-    delete orderParams.size; // Удаляем size при использовании quantity
+  // Если это лимитный ордер, добавляем цену
+  if (orderType.toUpperCase() === 'LIMIT' && price) {
+    params.price = price.toString();
   }
 
-  // Проверка валидности параметров
-  try {
-    if (orderParams.orderType === 'LIMIT' && (!params.price || parseFloat(params.price) <= 0)) {
-      throw new Error('Price is required for LIMIT orders');
-    }
+  // Логирование параметров ордера для отладки
+  this.log(`Placing order with params:`, JSON.stringify(params));
+  
+  // В режиме симуляции торговли возвращаем успешный результат без реального размещения ордера
+  if (this.demo) {
+    this.log(`DEMO MODE: Simulating order placement for ${symbol}`);
     
-    if (orderParams.size === '0' && !orderParams.quantity) {
-      throw new Error('Order size or quantity is required');
-    }
+    const simulatedResponse = {
+      code: '00000',
+      msg: 'success',
+      requestTime: Date.now(),
+      data: {
+        orderId: `sim_${Date.now()}`,
+        clientOid: params.clientOid,
+        symbol: symbol,
+        size: params.size,
+        status: 'FILLED'
+      }
+    };
     
-    // Попытка получить текущую цену, если не указана, для расчета размера позиции
-    if ((orderParams.size === '0' || orderParams.size === 'NaN') && params.amount) {
-      this.log(`Calculating position size using amount: ${params.amount}`);
-      
-      // Получаем текущую цену для расчета размера
-      return this.getTicker(params.symbol, (tickerErr, ticker) => {
-        if (tickerErr) {
-          this.logError(`Error getting ticker for size calculation:`, tickerErr);
-          if (typeof callback === 'function') {
-            callback(tickerErr);
-          }
-          return Promise.reject(tickerErr);
-        }
-        
-        // Проверяем наличие данных тикера
-        if (!ticker || !ticker.data || !Array.isArray(ticker.data) || ticker.data.length === 0) {
-          const noTickerError = new Error('Cannot calculate size: no ticker data available');
-          if (typeof callback === 'function') {
-            callback(noTickerError);
-          }
-          return Promise.reject(noTickerError);
-        }
-        
-        // Получаем текущую цену
-        const currentPrice = parseFloat(ticker.data[0].last || ticker.data[0].lastPr || 0);
-        
-        if (currentPrice <= 0) {
-          const priceError = new Error('Cannot calculate size: invalid current price');
-          if (typeof callback === 'function') {
-            callback(priceError);
-          }
-          return Promise.reject(priceError);
-        }
-        
-        // Рассчитываем размер позиции
-        const amount = parseFloat(params.amount);
-        const calculatedSize = amount / currentPrice;
-        
-        // Устанавливаем рассчитанный размер
-        orderParams.size = calculatedSize.toString();
-        
-        // Продолжаем размещение ордера с рассчитанным размером
-        return this._executePlaceOrder(orderParams, callback);
-      });
-    }
-    
-    // Если размер указан явно или расчёт не требуется
-    return this._executePlaceOrder(orderParams, callback);
-  } catch (validationError) {
-    this.logError(`Order validation error:`, validationError);
     if (typeof callback === 'function') {
-      callback(validationError);
+      callback(null, simulatedResponse);
       return;
     }
-    return Promise.reject(validationError);
+    return Promise.resolve(simulatedResponse);
+  }
+  
+  // Реальное размещение ордера через API
+  const promise = new Promise(async (resolve, reject) => {
+    try {
+      // Основной API эндпоинт
+      const response = await this.request('POST', '/api/v2/mix/order/place-order', {}, params);
+      
+      this.log(`Place order response:`, JSON.stringify(response).substring(0, 500));
+      
+      if (response && response.code === '00000') {
+        resolve(response);
+        return;
+      }
+      
+      // В случае ошибки с основным эндпоинтом, пробуем альтернативный
+      this.logError(`Error with primary endpoint /api/v2/mix/order/place-order:`, 
+        response ? `Response status: ${response.code}, message: ${response.msg}` : 'No response');
+      
+      this.log(`Trying alternative endpoint /api/mix/v1/order/placeOrder...`);
+      
+      // Подготавливаем параметры для альтернативного API
+      const altOrderParams = { ...params };
+      
+      // Преобразование параметров для альтернативного API, если необходимо
+      if (altOrderParams.quantity) {
+        altOrderParams.size = altOrderParams.quantity;
+        delete altOrderParams.quantity;
+      }
+      
+      const altResponse = await this.request('POST', '/api/mix/v1/order/placeOrder', {}, altOrderParams);
+      
+      this.log(`Alternative place order response:`, JSON.stringify(altResponse).substring(0, 500));
+      
+      if (altResponse && (altResponse.code === '00000' || altResponse.code === 0)) {
+        resolve(altResponse);
+      } else {
+        // Если оба API эндпоинта не сработали, возвращаем информативную ошибку
+        const errorMsg = altResponse && altResponse.msg 
+          ? `Order placement failed: ${altResponse.msg}` 
+          : 'Order placement failed with both API endpoints';
+        
+        reject(new Error(errorMsg));
+      }
+    } catch (error) {
+      this.logError(`Error placing order:`, error);
+      reject(error);
+    }
+  });
+  
+  // Обрабатываем в зависимости от стиля вызова (Promise или callback)
+  if (typeof callback === 'function') {
+    promise
+      .then(result => callback(null, result))
+      .catch(error => callback(error));
+  } else {
+    return promise;
   }
 }
 

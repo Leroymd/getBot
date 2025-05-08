@@ -218,7 +218,51 @@ exports.getBotStatus = async (req, res) => {
         console.warn(`Error getting saved config for ${symbol}:`, dbError.message);
       }
       
-      return res.json({ 
+      // Получаем анализ рынка для этого символа, чтобы заполнить lastMarketAnalysis
+      let marketAnalysis = null;
+      try {
+        // Создаем анализатор с дефолтной конфигурацией
+        const api = new BitgetAPI();
+        const analyzer = new MarketAnalyzer(symbol, {
+          autoSwitching: {
+            volatilityThreshold: 1.5,
+            volumeThreshold: 2.0,
+            trendStrengthThreshold: 0.6
+          }
+        }, api);
+        
+        // Используем Promise с обработкой ошибок и таймаутом
+        const analysisPromise = new Promise((resolve, reject) => {
+          analyzer.analyzeMarketConditions('1h', (err, result) => {
+            if (err) reject(err);
+            else resolve(result);
+          });
+        });
+        
+        // Таймаут 10 секунд для анализа
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Market analysis timed out')), 10000)
+        );
+        
+        // Ждем результат с таймаутом
+        marketAnalysis = await Promise.race([analysisPromise, timeoutPromise]);
+        
+        console.log(`Retrieved market analysis for ${symbol} for bot status`);
+      } catch (analysisError) {
+        console.warn(`Failed to get market analysis for ${symbol}:`, analysisError.message);
+        // Создаем дефолтный анализ при ошибке
+        marketAnalysis = {
+          recommendedStrategy: 'DCA',
+          marketType: 'UNKNOWN',
+          volatility: 0,
+          volumeRatio: 0,
+          trendStrength: 0,
+          confidence: 0.5,
+          timestamp: Date.now()
+        };
+      }
+      
+      return res.json({
         running: false,
         stats: {
           totalTrades: 0,
@@ -226,8 +270,8 @@ exports.getBotStatus = async (req, res) => {
           lossTrades: 0,
           totalPnl: 0,
           maxDrawdown: 0,
-          currentBalance: 100,
-          initialBalance: 100,
+          currentBalance: savedConfig?.common?.initialBalance || 100,
+          initialBalance: savedConfig?.common?.initialBalance || 100,
           tradesToday: 0,
           hourlyTrades: Array(24).fill(0),
           hourlyPnl: Array(24).fill(0),
@@ -235,7 +279,15 @@ exports.getBotStatus = async (req, res) => {
             DCA: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 },
             SCALPING: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 }
           },
-          lastMarketAnalysis: {
+          lastMarketAnalysis: marketAnalysis ? {
+            timestamp: marketAnalysis.timestamp || Date.now(),
+            recommendedStrategy: marketAnalysis.recommendedStrategy || 'DCA',
+            marketType: marketAnalysis.marketType || 'UNKNOWN',
+            volatility: marketAnalysis.volatility || 0,
+            volumeRatio: marketAnalysis.volumeRatio || 0,
+            trendStrength: marketAnalysis.trendStrength || 0,
+            confidence: marketAnalysis.confidence || 0.5
+          } : {
             timestamp: Date.now(),
             recommendedStrategy: 'DCA',
             marketType: 'UNKNOWN',
@@ -244,7 +296,7 @@ exports.getBotStatus = async (req, res) => {
             trendStrength: 0,
             confidence: 0.5
           },
-          activeStrategy: 'DCA'
+          activeStrategy: savedConfig?.activeStrategy || 'DCA'
         },
         // Включаем сохраненную конфигурацию, если есть
         config: savedConfig
@@ -265,6 +317,39 @@ exports.getBotStatus = async (req, res) => {
       
       // Получаем статистику бота
       const stats = activeBots[symbol].getStats();
+      
+      // Проверяем, что статистика бота не пустая и содержит все необходимые поля
+      if (!stats.strategyPerformance || !stats.lastMarketAnalysis) {
+        console.warn(`Bot stats for ${symbol} is missing essential fields, reinitializing...`);
+        
+        // Пытаемся принудительно получить свежий анализ рынка
+        try {
+          await activeBots[symbol].updateActiveStrategy();
+        } catch (updateError) {
+          console.error(`Failed to update active strategy for ${symbol}:`, updateError);
+        }
+        
+        // Запрашиваем статистику заново
+        const refreshedStats = activeBots[symbol].getStats();
+        
+        // Если статистика все еще неполная, создаем дефолтную структуру
+        if (!refreshedStats.strategyPerformance || !refreshedStats.lastMarketAnalysis) {
+          stats.strategyPerformance = stats.strategyPerformance || {
+            DCA: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 },
+            SCALPING: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 }
+          };
+          
+          stats.lastMarketAnalysis = stats.lastMarketAnalysis || {
+            timestamp: Date.now(),
+            recommendedStrategy: 'DCA',
+            marketType: 'UNKNOWN',
+            volatility: 0,
+            volumeRatio: 0,
+            trendStrength: 0,
+            confidence: 0.5
+          };
+        }
+      }
       
       // Если есть открытая позиция и текущая цена, рассчитываем PnL
       if (stats.openPosition && currentPrice) {
@@ -405,27 +490,17 @@ exports.setStrategy = async (req, res) => {
       return res.status(400).json({ error: 'Symbol and strategy are required' });
     }
 
-    console.log(`Changing strategy for ${symbol} to ${strategy}`);
-
-    if (!activeBots[symbol]) {
-      // Вернем понятный ответ, даже если бот не запущен
-      console.log(`No active bot found for ${symbol}, returning mock response`);
-      return res.status(404).json({ 
-        error: `No active bot found for ${symbol}`, 
-        message: 'Запустите бота перед изменением стратегии' 
-      });
-    }
-    
-    // Обновляем конфигурацию в базе данных, если она доступна
+    // Обновляем конфигурацию в базе данных независимо от того, запущен бот или нет
     try {
       let botConfig = await BotConfig.findOne({ symbol });
+      
       if (botConfig) {
+        // Обновляем существующую конфигурацию
         botConfig.activeStrategy = strategy;
         await botConfig.save();
-        console.log(`Strategy saved to DB for ${symbol}: ${strategy}`);
+        console.log(`Updated configuration in database for ${symbol}, strategy: ${strategy}`);
       } else {
-        console.log(`No config found in DB for ${symbol}, creating new one`);
-        // Создаем новую конфигурацию, если не существует
+        // Создаем новую конфигурацию с выбранной стратегией
         botConfig = new BotConfig({ 
           symbol, 
           activeStrategy: strategy,
@@ -461,19 +536,29 @@ exports.setStrategy = async (req, res) => {
           }
         });
         await botConfig.save();
+        console.log(`Created new configuration in database for ${symbol}, strategy: ${strategy}`);
       }
     } catch (dbError) {
-      console.warn(`Error updating strategy in DB: ${dbError.message}. Continuing anyway.`);
+      console.warn(`Database error while saving strategy for ${symbol}: ${dbError.message}`);
+      // Продолжаем выполнение даже при ошибке базы данных
     }
     
-    // Устанавливаем стратегию
-    const currentStrategy = activeBots[symbol].setStrategy(strategy);
-    console.log(`Successfully changed strategy for ${symbol} to ${strategy}`);
+    // Если бот активен, обновляем его стратегию в реальном времени
+    let currentStrategy = strategy;
+    if (activeBots[symbol]) {
+      currentStrategy = activeBots[symbol].setStrategy(strategy);
+      console.log(`Updated strategy for running bot ${symbol} to ${currentStrategy}`);
+    } else {
+      console.log(`Bot for ${symbol} is not running, configuration saved for future use`);
+    }
     
     res.json({ 
       success: true, 
-      message: `Strategy changed to ${strategy} for ${symbol}`,
-      currentStrategy
+      message: activeBots[symbol] 
+        ? `Strategy changed to ${strategy} for running bot ${symbol}` 
+        : `Strategy ${strategy} saved for ${symbol} (bot not running)`,
+      currentStrategy,
+      botRunning: !!activeBots[symbol]
     });
   } catch (error) {
     console.error('Error setting strategy:', error);

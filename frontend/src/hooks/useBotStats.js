@@ -21,7 +21,39 @@ function useBotStats(symbol, interval = 30000) {
       
       // Проверка наличия ответа
       if (response) {
-        setStats(response.stats || null);
+        // Обеспечиваем загрузку stats даже если бот не запущен
+        if (response.stats) {
+          setStats(response.stats);
+        } else if (response.running === false) {
+          // Если бот не запущен, создаем минимальный объект статистики
+          setStats({
+            totalTrades: 0,
+            winTrades: 0,
+            lossTrades: 0,
+            totalPnl: 0,
+            maxDrawdown: 0,
+            currentBalance: 100,
+            initialBalance: 100,
+            tradesToday: 0,
+            hourlyTrades: Array(24).fill(0),
+            hourlyPnl: Array(24).fill(0),
+            strategyPerformance: {
+              DCA: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 },
+              SCALPING: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 }
+            },
+            lastMarketAnalysis: {
+              timestamp: Date.now(),
+              recommendedStrategy: 'DCA',
+              marketType: 'UNKNOWN',
+              volatility: 0,
+              volumeRatio: 0,
+              trendStrength: 0,
+              confidence: 0.5
+            },
+            activeStrategy: 'DCA'
+          });
+        }
+        
         setRunning(response.running === true);
         setUptime(response.uptime || 0);
         setMessage(response.message || '');
@@ -29,6 +61,34 @@ function useBotStats(symbol, interval = 30000) {
         console.warn('Empty response from bot status API');
         setRunning(false);
         setMessage('No response from server');
+        
+        // В случае пустого ответа также создаем минимальный объект статистики
+        setStats({
+          totalTrades: 0,
+          winTrades: 0,
+          lossTrades: 0,
+          totalPnl: 0,
+          maxDrawdown: 0,
+          currentBalance: 100,
+          initialBalance: 100,
+          tradesToday: 0,
+          hourlyTrades: Array(24).fill(0),
+          hourlyPnl: Array(24).fill(0),
+          strategyPerformance: {
+            DCA: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 },
+            SCALPING: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 }
+          },
+          lastMarketAnalysis: {
+            timestamp: Date.now(),
+            recommendedStrategy: 'DCA',
+            marketType: 'UNKNOWN',
+            volatility: 0,
+            volumeRatio: 0,
+            trendStrength: 0,
+            confidence: 0.5
+          },
+          activeStrategy: 'DCA'
+        });
       }
       
       setError(null);
@@ -36,6 +96,34 @@ function useBotStats(symbol, interval = 30000) {
       console.error('Error fetching bot stats:', err);
       setError(err.message || 'Failed to load bot statistics');
       setRunning(false);
+      
+      // В случае ошибки также создаем минимальный объект статистики
+      setStats({
+        totalTrades: 0,
+        winTrades: 0,
+        lossTrades: 0,
+        totalPnl: 0,
+        maxDrawdown: 0,
+        currentBalance: 100,
+        initialBalance: 100,
+        tradesToday: 0,
+        hourlyTrades: Array(24).fill(0),
+        hourlyPnl: Array(24).fill(0),
+        strategyPerformance: {
+          DCA: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 },
+          SCALPING: { trades: 0, winRate: 0, avgProfit: 0, avgLoss: 0 }
+        },
+        lastMarketAnalysis: {
+          timestamp: Date.now(),
+          recommendedStrategy: 'DCA',
+          marketType: 'UNKNOWN',
+          volatility: 0,
+          volumeRatio: 0,
+          trendStrength: 0,
+          confidence: 0.5
+        },
+        activeStrategy: 'DCA'
+      });
     } finally {
       setLoading(false);
     }
